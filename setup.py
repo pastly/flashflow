@@ -4,6 +4,7 @@ from setuptools import setup, find_packages
 # To use a consistent encoding
 from codecs import open
 import os
+from flashflow import __version__
 
 
 here = os.path.abspath(os.path.dirname(__file__))
@@ -26,7 +27,7 @@ def get_data_files():
 
 setup(
     name='flashflow',
-    version='0.0.1',
+    version=__version__,
     description='FlashFlow: A Secure Speed Test for Tor',
     long_description=long_description(),
     long_description_content_type="text/markdown",
