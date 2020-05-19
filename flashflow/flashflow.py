@@ -2,6 +2,7 @@ from argparse import ArgumentParser
 import logging
 from . import __version__
 from .config import get_config, config_logging
+from .import tor_client
 
 
 log = logging.getLogger(__name__)
@@ -18,12 +19,17 @@ def create_parser():
 
 
 def main_(args, conf):
-    log.critical('Hello!')
+    c = tor_client.connect(conf['coord']['tor_location'])
 
 
 def main():
     p = create_parser()
     args = p.parse_args()
-    conf = get_config(args)
+    try:
+        conf = get_config(args.config)
+    except FileNotFoundError as e:
+        log.critical('Unable to open a config file: %s', e)
+        return
+    assert conf
     config_logging(conf)
     main_(args, conf)
