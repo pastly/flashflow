@@ -1,4 +1,4 @@
-from configparser import ConfigParser
+from configparser import ConfigParser, ExtendedInterpolation
 from tempfile import NamedTemporaryFile
 import os
 import logging
@@ -29,17 +29,17 @@ def config_logging(conf):
 
 
 def _get_default_config():
-    conf = ConfigParser()
+    conf = _empty_config()
     return _extend_config(conf, DEF_CONF_INI)
 
 
 def _get_default_log_config(conf=None):
-    conf = conf or ConfigParser()
+    conf = conf or _empty_config()
     return _extend_config(conf, DEF_CONF_LOG_INI)
 
 
 def _get_user_config(fname: Optional[str], conf=None):
-    conf = conf or ConfigParser()
+    conf = conf or _empty_config()
     if fname is None:
         return conf
     return _extend_config(conf, fname)
@@ -51,3 +51,16 @@ def _extend_config(conf, fname: str):
     with open(fname, 'rt') as fd:
         conf.read_file(fd, source=fname)
     return conf
+
+
+def _expand_path(path: str) -> str:
+    ''' Expand path string containing shell variables and '~' into their
+    values. Environment variables MUST have their '$' escaped by another '$'.
+    For example, '$$XDG_RUNTIME_DIR/foo.bar'. '''
+    return os.path.expanduser(os.path.expandvars(path))
+
+
+def _empty_config() -> ConfigParser:
+    return ConfigParser(
+        interpolation=ExtendedInterpolation(),
+        converters={'path': _expand_path})
