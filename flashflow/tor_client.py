@@ -139,9 +139,13 @@ def launch(
     torrc = _parse_torrc_str(torrc_extra, torrc)
     # log.debug(torrc)
     # Blocks while launching Tor
-    launch_tor_with_config(
-        torrc, tor_cmd=tor_bin, init_msg_handler=log.debug,
-        take_ownership=True)
+    try:
+        launch_tor_with_config(
+            torrc, tor_cmd=tor_bin, init_msg_handler=log.debug,
+            take_ownership=True)
+    except OSError as e:
+        log.error('Problem launching Tor: %s', e)
+        return None
     c = _connect(sock_path)
     if c is None:
         log.error('Unable to connect to Tor')
