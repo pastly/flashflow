@@ -19,7 +19,10 @@ def create_parser():
 
 
 def main_(args, conf):
-    c = tor_client.connect(conf.getpath('coord', 'tor_location'))
+    c = tor_client.launch(
+        conf.getpath('coord', 'tor_bin'),
+        conf.getpath('coord', 'tor_datadir'),
+    )
     if not c:
         return
     print(c)
