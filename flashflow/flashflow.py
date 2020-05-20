@@ -20,6 +20,9 @@ def create_parser():
 
 def main_(args, conf):
     c = tor_client.connect(conf['coord']['tor_location'])
+    if not c:
+        return
+    print(c)
 
 
 def main():

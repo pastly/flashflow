@@ -25,6 +25,7 @@ def get_package_data():
 def get_data_files():
     pass
 
+
 setup(
     name='flashflow',
     version=__version__,
@@ -65,7 +66,7 @@ setup(
     ],
     extras_require={
         # vulture: find unused code
-        'dev': ['flake8', 'vulture'],
+        'dev': ['flake8', 'vulture', 'mypy'],
         'test': ['tox', 'pytest', 'coverage'],
     },
 )
