@@ -67,7 +67,58 @@ def _connect(loc: str):
     return c
 
 
-def launch(tor_bin: str, tor_datadir: str) -> Optional[Controller]:
+def _update_torrc(
+        torrc: Dict[str, Union[str, List]],
+        key: str, val: str) -> None:
+    ''' Update the given torrc to contain the given key/value pair. If the key
+    already exists and the associated value is not a list, make it a list and
+    append the new value to that list. If the key already exists and the value
+    is already a list, append the new value to that list. Otherwise the key is
+    not in the torrc, so add it and its associate value. '''
+    log.debug('Adding key="%s" val="%s" to the torrc', key, val)
+    if key not in torrc:
+        torrc.update({key: val})
+        return
+    # Turn the existing `val` into `[val]` and append the new value to the
+    # list. Or if it's already a list, simply append.
+    existing = torrc[key]
+    if isinstance(existing, str):
+        torrc.update({key: [existing, val]})
+        return
+    assert isinstance(existing, list)
+    existing.append(val)
+    return
+
+
+def _parse_torrc_str(
+        s: str,
+        torrc: Dict[str, Union[str, List]] = None
+        ) -> Dict[str, Union[str, List]]:
+    ''' Take the given multi-line string `s` thats the contents of a torrc
+    file. Optionally take an existing torrc as a starting point, otherwise
+    start with an empty dict. Parse each line of `s` into the torrc dict, and
+    return the final result. '''
+    if torrc is None:
+        torrc = {}
+    for line in s.split('\n'):
+        # Remove leading/trailing whitespace
+        line = line.strip()
+        # Ignore blank lines and comment lines
+        if not len(line) or line[0] == '#':
+            continue
+        kv = line.split(None, 1)
+        # If this is ever not true, look at how sbws handles torrc options
+        # without a value. For some reason for sbws I claimed that torrc
+        # options can be just a key with no value, but right now I can't
+        # picture why that would ever be the case. - Matt
+        assert len(kv) > 1
+        _update_torrc(torrc, kv[0], kv[1])
+    return torrc
+
+
+def launch(
+        tor_bin: str, tor_datadir: str, torrc_extra: str
+        ) -> Optional[Controller]:
     ''' Launch and connect to Tor using the given tor binary (or path to tor
     binary) and using the given Tor DataDirectory. Returns an authenticated
     stem Controller object when successful. If any error occurs, this module
@@ -85,6 +136,8 @@ def launch(tor_bin: str, tor_datadir: str) -> Optional[Controller]:
         'ControlSocket': sock_path,
         'Log': ['NOTICE file ' + opj(tor_datadir, 'notice.log')],
     })
+    torrc = _parse_torrc_str(torrc_extra, torrc)
+    # log.debug(torrc)
     # Blocks while launching Tor
     launch_tor_with_config(
         torrc, tor_cmd=tor_bin, init_msg_handler=log.debug,

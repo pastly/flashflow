@@ -22,6 +22,7 @@ def main_(args, conf):
     c = tor_client.launch(
         conf.getpath('coord', 'tor_bin'),
         conf.getpath('coord', 'tor_datadir'),
+        conf.get('coord', 'torrc_extra_lines')
     )
     if not c:
         return
