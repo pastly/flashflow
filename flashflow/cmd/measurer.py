@@ -1,6 +1,7 @@
 from argparse import ArgumentParser
 import logging
 from .. import tor_client
+from .. import msg
 
 
 log = logging.getLogger(__name__)
@@ -23,3 +24,9 @@ def main(args, conf) -> None:
     )
     if not c:
         return
+    m = msg.Foo(1, 'abc', [1, '4', ()], {'a': None, 'b': 'jeff', 'c': -1})
+    log.debug('%s', m)
+    s = m.serialize()
+    log.debug('%s', s)
+    m_ = msg.Foo.deserialize(s)
+    log.debug('%s', m_)
