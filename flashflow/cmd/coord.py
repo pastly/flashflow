@@ -18,9 +18,9 @@ def gen_parser(sub) -> ArgumentParser:
 # the things it does. Adding the return value (e.g. '-> None') is enough
 def main(args, conf) -> None:
     c = tor_client.launch(
-        conf.getpath('coord', 'tor_bin'),
+        conf.getpath('tor', 'tor_bin'),
         conf.getpath('coord', 'tor_datadir'),
-        conf.get('coord', 'torrc_extra_lines')
+        conf.get('tor', 'torrc_extra_lines')
     )
     if not c:
         return
