@@ -1,11 +1,13 @@
-from stem.control import Controller
-from stem.connection import IncorrectSocketType
-from stem.process import launch_tor_with_config
-from stem import SocketError, ProtocolError
+from stem.control import Controller  # type: ignore
+from stem.connection import IncorrectSocketType  # type: ignore
+from stem.process import launch_tor_with_config  # type: ignore
+from stem.response import ControlMessage  # type: ignore
+from stem import SocketError, ProtocolError  # type: ignore
 import copy
 import os
 import logging
 from typing import Optional, List, Union, Dict
+from .tor_ctrl_msg import TorCtrlMsg
 
 
 log = logging.getLogger(__name__)
@@ -156,3 +158,17 @@ def launch(
         c.get_version(),
         sock_path)
     return c
+
+
+def send_msg(c: Controller, m: TorCtrlMsg) -> ControlMessage:
+    ''' Send a message to Tor on the given Controller. Wait for the response.
+    Return response.  This should only be used for messages for which stem
+    doesn't already provide an interface.
+
+    Yes this is a thin wrapper (right now...). The reasons for it existing are
+        - to avoid using `Controller.msg()` directly,
+        - only allow ourselves to send specific messages,
+        - make it "impossible" to send malformed messages by only accepting
+        TorCtrlMsg subtypes and using static analyses
+    '''
+    return c.msg(str(m))

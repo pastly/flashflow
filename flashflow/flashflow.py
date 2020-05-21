@@ -2,7 +2,8 @@ from argparse import ArgumentParser
 import logging
 from . import __version__
 from .config import get_config, config_logging
-from .import tor_client
+from .tor_ctrl_msg import CoordStartMeas
+from . import tor_client
 
 
 log = logging.getLogger(__name__)
@@ -18,7 +19,9 @@ def create_parser():
     return p
 
 
-def main_(args, conf):
+# This function needs **some sort** of type annotation so that mypy will check
+# the things it does. Adding the return value (e.g. '-> None') is enough
+def main_(args, conf) -> None:
     c = tor_client.launch(
         conf.getpath('coord', 'tor_bin'),
         conf.getpath('coord', 'tor_datadir'),
@@ -26,7 +29,8 @@ def main_(args, conf):
     )
     if not c:
         return
-    print(c)
+    ret = tor_client.send_msg(c, CoordStartMeas('relay1'))
+    log.info('%s', ret)
 
 
 def main():
