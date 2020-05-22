@@ -8,6 +8,7 @@ from tempfile import NamedTemporaryFile
 import logging
 from .. import tor_client
 # from ..tor_ctrl_msg import CoordStartMeas
+from .. import msg
 from typing import Optional, Tuple, List, IO
 
 
@@ -118,6 +119,9 @@ def main(args, conf) -> None:
                 'Empty read. Closing connection')
             sel.unregister(conn)
             conn.close()
+            return
+        m = msg.Foo.deserialize(data)
+        log.debug('%s', m)
 
     for listen_sock in listen_socks:
         sel.register(listen_sock, selectors.EVENT_READ, _accept_cb)

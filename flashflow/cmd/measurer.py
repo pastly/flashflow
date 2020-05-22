@@ -44,14 +44,11 @@ def main(args, conf) -> None:
     if ret_code != CoordConnRes.SUCCESS:
         log.warn('Unable to connect to coord: %s', sock_or_err)
         return
-    sock: ssl.SSLSocket = sock_or_err
-    log.debug('%s', sock)
-    # m = msg.Foo(1, 'abc', [1, '4', ()], {'a': None, 'b': 'jeff', 'c': -1})
-    # log.debug('%s', m)
-    # s = m.serialize()
-    # log.debug('%s', s)
-    # m_ = msg.Foo.deserialize(s)
-    # log.debug('%s', m_)
+    assert not isinstance(sock_or_err, str)
+    sock = sock_or_err
+    m = msg.Foo(1, 'abc', [1, '4', ()], {'a': None, 'b': 'jeff', 'c': -1})
+    s = m.serialize()
+    sock.write(s)
 
 
 class CoordConnRes(enum.Enum):
@@ -95,7 +92,7 @@ def _get_socket_with_coord(
         type=socket.SOCK_STREAM)
     if not addr_infos:
         return CoordConnRes.RETRY_ERROR,\
-            'Could not getaddrinfo() with %' (addr_port,)
+            'Could not getaddrinfo() with %s' % (addr_port,)
     # Arbitrarily choose the first info returned. We *could*, for example,
     # favor ipv6, but nah let's put that off for now.
     assert len(addr_infos) > 0
