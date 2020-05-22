@@ -101,12 +101,21 @@ def main(args, conf) -> None:
 
     # Called when data available to read on a connection (after TLS)
     def _read_cb(conn: ssl.SSLSocket, mask: int) -> None:
-        data = conn.recv(1024)
+        try:
+            data = conn.recv(1024)
+        except ConnectionResetError as e:
+            # TODO with whom? Log who they were. conn.getpeername() won't work
+            # as they're gone now.
+            log.warn('Could not finish reading: %s', e)
+            sel.unregister(conn)
+            conn.close()
+            return
         log.debug('Got %s', data)
         if not data:
+            # TODO with whom? Log who they were. conn.getpeername() won't work
+            # as they're gone now.
             log.info(
-                'Empty read. Closing connection with %s',
-                conn.getpeername()[0:2])
+                'Empty read. Closing connection')
             sel.unregister(conn)
             conn.close()
 
