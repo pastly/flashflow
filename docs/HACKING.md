@@ -83,7 +83,7 @@ show up.
 
 # Adding a new message (coord <--> measurer)
 
-These messages are defined in `flashflow.msg.py`.
+These messages are defined in `flashflow/msg.py`.
 
 The working example will be a new message `Foo`.
 
@@ -113,7 +113,7 @@ The following is required.
 2. Define a `serialize(...)` method that takes self and returns bytes
 3. Define a `from_dict(...)` that takes a dictionary and returns a valid `Foo` object.
 
-The serialize function **MUST** JSON as a byte string, and the JSON **MUST**
+The serialize function **MUST** return JSON as a byte string, and the JSON **MUST**
 include the `msg_type` as well as all other fields necessary to construct a new
 valid instance of `Foo`.
 
