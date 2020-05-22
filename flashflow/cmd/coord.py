@@ -120,7 +120,7 @@ def main(args, conf) -> None:
             sel.unregister(conn)
             conn.close()
             return
-        m = msg.Foo.deserialize(data)
+        m = msg.FFMsg.deserialize(data)
         log.debug('%s', m)
 
     for listen_sock in listen_socks:

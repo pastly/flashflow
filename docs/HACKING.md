@@ -80,3 +80,63 @@ show up.
     flashflow jeff
     flashflow jeff -h
     flashflow -h
+
+# Adding a new message (coord <--> measurer)
+
+These messages are defined in `flashflow.msg.py`.
+
+The working example will be a new message `Foo`.
+
+## Define a new `MsgType` enum variant
+
+Find `class MsgType` and add a new variant. Use a random integer for its value;
+just smash yo' keyboard.
+
+    class MsgType(enum.Enum):
+        # ... docs and other variants
+        FOO = 19874
+
+## Check for the new variant in `FFMsg.deserialize(...)`
+
+This function is called to deserialize incoming messages. It checks the type of
+the incoming message and passes control off to the appropriate class for
+further deserialization. Check for your enum variant in the if/elif chain.
+
+    elif msg_type == MsgType.FOO:
+        return Foo.from_dict(j)
+
+## Define your new `class Foo`
+
+The following is required.
+
+1. Set a `msg_type` class variable set to `MsgType.FOO`.
+2. Define a `serialize(...)` method that takes self and returns bytes
+3. Define a `from_dict(...)` that takes a dictionary and returns a valid `Foo` object.
+
+The serialize function **MUST** JSON as a byte string, and the JSON **MUST**
+include the `msg_type` as well as all other fields necessary to construct a new
+valid instance of `Foo`.
+
+The `from_dict` function **MUST** be able to take a dictionary constructed from
+such a JSON byte string and create a new valid instance of `Foo`.
+
+    class Foo(FFMsg):
+        # (1) setting msg_type
+        msg_type = MsgType.FOO
+    
+        def __init__(self, i: int):
+            self.i = i
+    
+        # (2) serialize that returns a JSON byte string with all necessary
+        # fields and msg_type as an int
+        def serialize(self) -> bytes:
+            return json.dumps({
+                'msg_type': self.msg_type.value,
+                'i': self.i,
+            }).encode('utf-8')
+    
+        # (3) from_dict that can take a dictionary constructed from a JSON byte
+        # string that serialize() output
+        @staticmethod
+        def from_dict(d: dict) -> 'Foo':
+            return Foo(d['i'])
