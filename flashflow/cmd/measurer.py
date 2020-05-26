@@ -46,12 +46,12 @@ def main(args, conf) -> None:
         return
     assert not isinstance(sock_or_err, str)
     sock = sock_or_err
-    m = msg.Bar('asdf')
-    s = m.serialize()
-    sock.write(s)
-    m = msg.Foo('1')
-    s = m.serialize()
-    sock.write(s)
+    # m = msg.Bar('asdf')
+    # s = m.serialize()
+    # sock.write(s)
+    # m = msg.Foo('1')
+    # s = m.serialize()
+    # sock.write(s)
 
 
 class CoordConnRes(enum.Enum):

@@ -22,6 +22,8 @@ class MsgType(enum.Enum):
     '''
     FOO = 876234
     BAR = 2876
+    CONNECT_TO_RELAY = 357
+    CONNECTED_TO_RELAY = 78612
 
 
 class FFMsg:
@@ -71,3 +73,50 @@ class Bar(FFMsg):
     @staticmethod
     def from_dict(d: dict) -> 'Bar':
         return Bar(d['s'])
+
+
+class ConnectToRelay(FFMsg):
+    ''' Coordinator --> Measurer message instructing them to connect to the
+    specified relay. This message contains
+
+    - the fingerprint of the relay the measurer should connect to
+    '''
+    msg_type = MsgType.CONNECT_TO_RELAY
+
+    def __init__(self, fp: str):
+        self.fp = fp
+
+    def serialize(self) -> bytes:
+        return json.dumps({
+            'msg_type': self.msg_type.value,
+            'fp': self.fp,
+        }).encode('utf-8')
+
+    @staticmethod
+    def from_dict(d: dict) -> 'ConnectToRelay':
+        return ConnectToRelay(d['fp'])
+
+
+class ConnectedToRelay(FFMsg):
+    ''' Measurer --> Coordinator message indicating whether or not they
+    successfully connected to the relay. This message contains
+
+    - a bool, indicating success/failure
+    - the original ConnectToRelay message
+    '''
+    msg_type = MsgType.CONNECTED_TO_RELAY
+
+    def __init__(self, success: bool, orig: ConnectToRelay):
+        self.success = success
+        self.orig = orig
+
+    def serialize(self) -> bytes:
+        return json.dumps({
+            'msg_type': self.msg_type.value,
+            'success': self.success,
+            'orig': self.orig.serialize(),
+        }).encode('utf-8')
+
+    @staticmethod
+    def from_dict(d: dict) -> 'ConnectedToRelay':
+        return ConnectedToRelay(d['success'], ConnectToRelay(d['orig']))
