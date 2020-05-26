@@ -9,7 +9,7 @@ import os
 from stem.control import Controller  # type: ignore
 from transitions import Machine  # type: ignore
 from .. import tor_client
-# from .. import msg
+from .. import msg
 from typing import Tuple, Union
 
 
@@ -25,8 +25,20 @@ class CoordProtocol(asyncio.Protocol):
         machine.nonfatal_error()
         pass
 
+    def data_received(self, data: bytes):
+        ''' Receive data from the coordinator. Parse it into a FFMsg and tell
+        other code about the message.
+
+        It's possible that this is called before the entire message is
+        received. In that case, we'll need to edit this function to buffer
+        bytes until the entire message has arrived.  '''
+        log.info('Received %d bytes: %s', len(data), data)
+        m = msg.FFMsg.deserialize(data)
+        machine.recv_coord_msg(m)
+
 
 class States(enum.Enum):
+    ''' States that we, as a FlashFlow measurer, can be in. '''
     # State we start in. Only ever in this state when first launching
     START = enum.auto()
     # First "real" state. Launch a tor client and connect to it
@@ -42,14 +54,17 @@ class States(enum.Enum):
     FATAL_ERROR = enum.auto()
 
 
-class StateMachine:
+class StateMachine(Machine):
+    ''' State machine and main control flow hub for the FlashFlow command
+    **measure**.
+    '''
     # conf  # This is set in __init__
     tor_client: Controller
     coord_trans: asyncio.BaseTransport
     coord_proto: CoordProtocol
 
     def __init__(self, conf):
-        self.machine = Machine(
+        super().__init__(
             model=self,
             states=States,
             transitions=[
@@ -110,10 +125,10 @@ class StateMachine:
         connecting to the coordinator until we are successful or have a fatal
         error warranting completely giving up on life.
 
-        This function uses asynchronous python: the connection is represented by
-        a transport and protocol, and we try connecting asynchronously and use a
-        callback to find out the result. That said, the work done here should
-        probably be the only thing going on.
+        This function uses asynchronous python: the connection is represented
+        by a transport and protocol, and we try connecting asynchronously and
+        use a callback to find out the result. That said, the work done here
+        should probably be the only thing going on.
         '''
         assert self.state == States.ENSURE_CONN_W_COORD
         # TODO: what if connection goes away?
@@ -208,6 +223,28 @@ class StateMachine:
         # log.error('We encountered a fatal error :(')
         self._cleanup()
         self._die()
+
+    # ########################################################################
+    # MESSAGES FROM COORD. These are called when the coordinator tells us
+    # something.
+    # ########################################################################
+
+    def recv_coord_msg(self, message: msg.FFMsg):
+        msg_type = type(message)
+        state = self.state
+        if msg_type == msg.ConnectToRelay and state == States.READY:
+            assert isinstance(message, msg.ConnectToRelay)
+            self._recv_msg_connect_to_relay(message)
+        else:
+            log.warn(
+                'Unexpected %s message received in state %s',
+                msg_type, state)
+            self.nonfatal_error()
+
+    def _recv_msg_connect_to_relay(self, message: msg.ConnectToRelay):
+        assert self.state == States.READY
+        log.info('Got msg to connect to relay %s', message.fp)
+        self.coord_trans.write(msg.ConnectedToRelay(True, message).serialize())
 
 
 class CoordConnRes(enum.Enum):

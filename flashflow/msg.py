@@ -20,59 +20,26 @@ class MsgType(enum.Enum):
     To prevent devs from being tempted to think the variants' values imply some
     sort of relationship or order, set them to random ints.
     '''
-    FOO = 876234
-    BAR = 2876
     CONNECT_TO_RELAY = 357
     CONNECTED_TO_RELAY = 78612
 
 
 class FFMsg:
     def serialize(self) -> bytes:
-        assert None, 'Child class did not implement its own serialize()'
+        return json.dumps(self._to_dict()).encode('utf-8')
+
+    def _to_dict(self):
+        assert None, 'Child FFMsg type did not implement _to_dict()'
 
     @staticmethod
     def deserialize(b: bytes) -> 'FFMsg':
         j = json.loads(b.decode('utf-8'))
         msg_type = MsgType(j['msg_type'])
-        if msg_type == MsgType.FOO:
-            return Foo.from_dict(j)
-        elif msg_type == MsgType.BAR:
-            return Bar.from_dict(j)
+        if msg_type == MsgType.CONNECT_TO_RELAY:
+            return ConnectToRelay.from_dict(j)
+        elif msg_type == MsgType.CONNECTED_TO_RELAY:
+            return ConnectedToRelay.from_dict(j)
         assert None, 'Unknown/unimplemented MsgType %d' % (j['msg_type'],)
-
-
-class Foo(FFMsg):
-    msg_type = MsgType.FOO
-
-    def __init__(self, i: int):
-        self.i = i
-
-    def serialize(self) -> bytes:
-        return json.dumps({
-            'msg_type': self.msg_type.value,
-            'i': self.i,
-        }).encode('utf-8')
-
-    @staticmethod
-    def from_dict(d: dict) -> 'Foo':
-        return Foo(d['i'])
-
-
-class Bar(FFMsg):
-    msg_type = MsgType.BAR
-
-    def __init__(self, s: str):
-        self.s = s
-
-    def serialize(self) -> bytes:
-        return json.dumps({
-            'msg_type': self.msg_type.value,
-            's': self.s,
-        }).encode('utf-8')
-
-    @staticmethod
-    def from_dict(d: dict) -> 'Bar':
-        return Bar(d['s'])
 
 
 class ConnectToRelay(FFMsg):
@@ -86,11 +53,11 @@ class ConnectToRelay(FFMsg):
     def __init__(self, fp: str):
         self.fp = fp
 
-    def serialize(self) -> bytes:
-        return json.dumps({
+    def _to_dict(self) -> dict:
+        return {
             'msg_type': self.msg_type.value,
             'fp': self.fp,
-        }).encode('utf-8')
+        }
 
     @staticmethod
     def from_dict(d: dict) -> 'ConnectToRelay':
@@ -110,13 +77,16 @@ class ConnectedToRelay(FFMsg):
         self.success = success
         self.orig = orig
 
-    def serialize(self) -> bytes:
-        return json.dumps({
+    def _to_dict(self) -> dict:
+        return {
             'msg_type': self.msg_type.value,
             'success': self.success,
-            'orig': self.orig.serialize(),
-        }).encode('utf-8')
+            'orig': self.orig._to_dict(),
+        }
 
     @staticmethod
     def from_dict(d: dict) -> 'ConnectedToRelay':
-        return ConnectedToRelay(d['success'], ConnectToRelay(d['orig']))
+        return ConnectedToRelay(
+            d['success'],
+            ConnectToRelay.from_dict(d['orig']),
+        )

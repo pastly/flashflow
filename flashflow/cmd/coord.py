@@ -7,7 +7,7 @@ import socket
 from tempfile import NamedTemporaryFile
 import logging
 from .. import tor_client
-# from ..tor_ctrl_msg import CoordStartMeas
+from ..tor_ctrl_msg import CoordStartMeas
 from .. import msg
 from typing import Optional, Tuple, List, IO
 
@@ -99,6 +99,7 @@ def main(args, conf) -> None:
         # just what examples did.
         conn.setblocking(False)
         sel.register(conn, selectors.EVENT_READ, _read_cb)
+        conn.write(msg.ConnectToRelay('relay1').serialize())
 
     # Called when data available to read on a connection (after TLS)
     def _read_cb(conn: ssl.SSLSocket, mask: int) -> None:
@@ -177,6 +178,7 @@ def _get_listen_sockets(
             'Binding to %s (%s) port %d ...',
             addr_port[0], sock_addr[0], sock_addr[1])
         s = socket.socket(family, type)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind(sock_addr[0:2])
         except OSError as e:

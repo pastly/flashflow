@@ -110,10 +110,10 @@ further deserialization. Check for your enum variant in the if/elif chain.
 The following is required.
 
 1. Set a `msg_type` class variable set to `MsgType.FOO`.
-2. Define a `serialize(...)` method that takes self and returns bytes
+2. Define a `_to_dict(...)` method that takes self and returns a dict.
 3. Define a `from_dict(...)` that takes a dictionary and returns a valid `Foo` object.
 
-The serialize function **MUST** return JSON as a byte string, and the JSON **MUST**
+The serialize function **MUST** return a JSON-serializable dict, and the JSON **MUST**
 include the `msg_type` as well as all other fields necessary to construct a new
 valid instance of `Foo`.
 
@@ -129,11 +129,11 @@ such a JSON byte string and create a new valid instance of `Foo`.
     
         # (2) serialize that returns a JSON byte string with all necessary
         # fields and msg_type as an int
-        def serialize(self) -> bytes:
+        def _to_dict(self) -> dict:
             return json.dumps({
                 'msg_type': self.msg_type.value,
                 'i': self.i,
-            }).encode('utf-8')
+            }
     
         # (3) from_dict that can take a dictionary constructed from a JSON byte
         # string that serialize() output
