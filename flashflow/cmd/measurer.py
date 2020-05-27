@@ -55,15 +55,14 @@ class States(enum.Enum):
 
 
 class StateMachine(Machine):
-    ''' State machine and main control flow hub for the FlashFlow command
-    **measure**.
-    '''
+    ''' State machine and main control flow hub for FlashFlow measurer '''
     # conf  # This is set in __init__
     tor_client: Controller
     coord_trans: asyncio.BaseTransport
     coord_proto: CoordProtocol
 
     def __init__(self, conf):
+        self.conf = conf
         super().__init__(
             model=self,
             states=States,
@@ -99,7 +98,6 @@ class StateMachine(Machine):
             # <state> regardless of current state
             auto_transitions=False,
         )
-        self.conf = conf
 
     def _ensure_conn_w_tor(self):
         ''' Main function in the ENSURE_CONN_W_TOR state. Launch a tor client
