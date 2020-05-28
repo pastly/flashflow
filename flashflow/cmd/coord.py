@@ -29,11 +29,12 @@ class MeasrProtocol(asyncio.Protocol):
         # TODO: log host:port of measurer
         log.debug('Connection from measurer')
         self.transport = transport
-        # self.transport.write(msg.ConnectToRelay('relay1').serialize())
+        machine.notif_measurer_connected(self)
 
     def connection_lost(self, exc):
         log.debug('Lost connection with measurer')
-        # TODO: what do about this
+        machine.notif_measurer_disconnected(self)
+        # TODO: anything else need to be done?
 
     def data_received(self, data: bytes):
         log.info('Received %d bytes: %s', len(data), data)
@@ -77,9 +78,12 @@ class MStateMachine(Machine):
     relay_fp: str
     relay_circ: int
 
-    def __init__(self, tor_client: Controller, relay_fp: str):
+    def __init__(
+            self, tor_client: Controller, relay_fp: str,
+            measurers: List[MeasrProtocol]):
         self.tor_client = tor_client
         self.relay_fp = relay_fp
+        self.measurers = measurers
         self.relay_circ = None
         super().__init__(
             model=self,
@@ -154,6 +158,9 @@ class MStateMachine(Machine):
 
     def _tell_measr_to_connect(self):
         ''' Main function for MEASR_CONNECTING state. '''
+        m = msg.ConnectToRelay(self.relay_fp)
+        for measr in self.measurers:
+            measr.transport.write(m.serialize())
         log.debug('Need to tell measurers to connect now')
 
     def _cleanup(self):
@@ -310,11 +317,13 @@ class StateMachine(Machine):
     # conf  # This is set in __init__
     server: asyncio.base_events.Server
     tor_client: Controller
+    measurers: List[MeasrProtocol]
     measurements: List[MStateMachine]
 
     def __init__(self, conf):
         self.conf = conf
         self.measurements = []
+        self.measurers = []
         super().__init__(
             model=self,
             states=States,
@@ -457,9 +466,7 @@ class StateMachine(Machine):
         loop.call_soon(self._ensure_conn_w_tor)
 
     def on_enter_READY(self):
-        m = MStateMachine(self.tor_client, 'relay1')
-        m.change_state_starting()
-        self.measurements.append(m)
+        pass
 
     def on_enter_NONFATAL_ERROR(self):
         self._cleanup()
@@ -481,6 +488,24 @@ class StateMachine(Machine):
             'Someone (%s) failed to TLS handshake with us: %s',
             trans.get_extra_info('peername'), exc)
         trans.close()
+
+    def notif_measurer_connected(self, measurer: MeasrProtocol):
+        ''' Called from MeasrProtocol when a connection is successfully made
+        from a measurer '''
+        self.measurers.append(measurer)
+        log.debug('Now have %d measurers', len(self.measurers))
+        # start a toy measurement for testing
+        m = MStateMachine(
+            self.tor_client, 'relay1', [_ for _ in self.measurers])
+        m.change_state_starting()
+        self.measurements.append(m)
+
+    def notif_measurer_disconnected(self, measurer: MeasrProtocol):
+        ''' Called from MeasrProtocol when a connection with a measurer has
+        been lost '''
+        self.measurers = [m for m in self.measurers if m != measurer]
+        log.debug('Measurer lost. Now have %d', len(self.measurers))
+        # TODO: need to do error stuff if they were a part of any measurements
 
     def notif_measurement_done(self, meas: MStateMachine, success: bool):
         ''' Called from an individual measurement's state machine to tell us it
