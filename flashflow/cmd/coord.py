@@ -161,7 +161,6 @@ class MStateMachine(Machine):
         m = msg.ConnectToRelay(self.relay_fp)
         for measr in self.measurers:
             measr.transport.write(m.serialize())
-        log.debug('Need to tell measurers to connect now')
 
     def _cleanup(self):
         ''' Main function for CLEANUP state. '''
