@@ -60,7 +60,7 @@ setup(
         ]
     },
     install_requires=[
-        'stem==1.8.0',
+        'stem==1.8.0.dev0',
         'transitions==0.8.1',
         # 'requests[socks]',
     ],

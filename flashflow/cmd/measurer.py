@@ -22,7 +22,7 @@ class CoordProtocol(asyncio.Protocol):
 
     def connection_lost(self, exc):
         log.debug('Lost connection with coord')
-        machine.nonfatal_error()
+        machine.change_state_nonfatal_error()
         pass
 
     def data_received(self, data: bytes):
@@ -47,6 +47,8 @@ class States(enum.Enum):
     ENSURE_CONN_W_COORD = enum.auto()
     # We're idle and ready to be told what to do
     READY = enum.auto()
+    # Got command from coordinator to connect to a relay. Doing it right now
+    CREATE_CONN_W_RELAY = enum.auto()
     # There was some sort of error that calls for cleaning everything up and
     # essentially relaunching, but we shouldn't outright die.
     NONFATAL_ERROR = enum.auto()
@@ -55,10 +57,29 @@ class States(enum.Enum):
 
 
 class StateMachine(Machine):
-    ''' State machine and main control flow hub for FlashFlow measurer '''
+    ''' State machine and main control flow hub for FlashFlow measurer.
+
+    change_state_*:
+        State transitions are named change_state_* and don't exist here in the
+        code. The Machine class takes care of making them based on the triggers
+        in the list of possible transitions. For example: change_state_starting
+        is named as the trigger for transitions from either START or
+        NONFATAL_ERROR into ENSURE_CONN_W_TOR.
+
+    on_enter_*:
+        This is how the Machine class finds functions to call upon entering the
+        given state. For example, on_enter_NONFATAL_ERROR() is called when we
+        are transitioning to the NONFATAL_ERROR state. These functions should
+        be kept short. Significant work/logic should be done in other functions
+        that these call or schedule for calling later.
+
+    _*:
+        Other internal functions. See their documentation for more information
+        on them.
+    '''
     # conf  # This is set in __init__
     tor_client: Controller
-    coord_trans: asyncio.BaseTransport
+    coord_trans: asyncio.WriteTransport
     coord_proto: CoordProtocol
 
     def __init__(self, conf):
@@ -68,27 +89,32 @@ class StateMachine(Machine):
             states=States,
             transitions=[
                 {
-                    'trigger': 'starting',
+                    'trigger': 'change_state_starting',
                     'source': [States.START, States.NONFATAL_ERROR],
                     'dest': States.ENSURE_CONN_W_TOR,
                 },
                 {
-                    'trigger': 'connected_to_tor',
+                    'trigger': 'change_state_connected_to_tor',
                     'source': States.ENSURE_CONN_W_TOR,
                     'dest': States.ENSURE_CONN_W_COORD,
                 },
                 {
-                    'trigger': 'connected_to_coord',
+                    'trigger': 'change_state_connected_to_coord',
                     'source': States.ENSURE_CONN_W_COORD,
                     'dest': States.READY,
                 },
                 {
-                    'trigger': 'nonfatal_error',
+                    'trigger': 'change_state_recv_cmd_connect',
+                    'source': States.READY,
+                    'dest': States.CREATE_CONN_W_RELAY,
+                },
+                {
+                    'trigger': 'change_state_nonfatal_error',
                     'source': '*',
                     'dest': States.NONFATAL_ERROR,
                 },
                 {
-                    'trigger': 'fatal_error',
+                    'trigger': 'change_state_fatal_error',
                     'source': '*',
                     'dest': States.FATAL_ERROR,
                 },
@@ -113,10 +139,10 @@ class StateMachine(Machine):
         )
         if not c:
             log.error('Unable to launch and connect to tor client')
-            self.fatal_error()
+            self.change_state_fatal_error()
             return
         self.tor_client = c
-        self.connected_to_tor()
+        self.change_state_connected_to_tor()
 
     def _ensure_conn_w_coord(self, delay: float):
         ''' Main function in the ENSURE_CONN_W_COORD state. Repeatedly try
@@ -134,7 +160,7 @@ class StateMachine(Machine):
         coord_addr_port = self.conf.getaddr('measurer', 'coord_addr')
         if coord_addr_port is None:
             log.error('Don\'t know where coord is')
-            self.fatal_error()
+            self.change_state_fatal_error()
             return
 
         # Callback to get the result of one connection attempt. If it didn't
@@ -153,7 +179,7 @@ class StateMachine(Machine):
                 log.error(
                     'Fatal error connecting to coordinator: %s',
                     stuff_or_error)
-                self.fatal_error()
+                self.change_state_fatal_error()
                 return
             elif success_code == CoordConnRes.RETRY_ERROR:
                 delay = min(2 * delay, 60)
@@ -166,7 +192,7 @@ class StateMachine(Machine):
             assert success_code == CoordConnRes.SUCCESS
             assert not isinstance(stuff_or_error, str)
             self.coord_trans, self.coord_proto = stuff_or_error
-            self.connected_to_coord()
+            self.change_state_connected_to_coord()
         # Kick off the asyncronous attempt to connect and attach the above
         # callback so we can get the result.
         task = asyncio.Task(_try_connect_to_coord(
@@ -203,6 +229,9 @@ class StateMachine(Machine):
         ''' End execution of the program. '''
         loop.stop()
 
+    def _create_conn_w_tor(self, message: msg.ConnectToRelay):
+        log.debug('Need to create conn with Tor. Message: %s', message)
+
     # ########################################################################
     # STATE CHANGE EVENTS. These are called when entering the specified state.
     # ########################################################################
@@ -215,12 +244,15 @@ class StateMachine(Machine):
 
     def on_enter_NONFATAL_ERROR(self):
         self._cleanup()
-        loop.call_soon(self.starting)
+        loop.call_soon(self.change_state_starting)
 
     def on_enter_FATAL_ERROR(self):
         # log.error('We encountered a fatal error :(')
         self._cleanup()
         self._die()
+
+    def on_enter_CREATE_CONN_W_RELAY(self, message: msg.ConnectToRelay):
+        loop.call_soon(partial(self._create_conn_w_tor, message))
 
     # ########################################################################
     # MESSAGES FROM COORD. These are called when the coordinator tells us
@@ -237,12 +269,14 @@ class StateMachine(Machine):
             log.warn(
                 'Unexpected %s message received in state %s',
                 msg_type, state)
-            self.nonfatal_error()
+            self.change_state_nonfatal_error()
 
     def _recv_msg_connect_to_relay(self, message: msg.ConnectToRelay):
         assert self.state == States.READY
-        log.info('Got msg to connect to relay %s', message.fp)
-        self.coord_trans.write(msg.ConnectedToRelay(True, message).serialize())
+        self.change_state_recv_cmd_connect(message)
+        # assert self.state == States.READY
+        # log.info('Got msg to connect to relay %s', message.fp)
+        # self.coord_trans.write(msg.ConnectedToRelay(True, message).serialize())
 
 
 class CoordConnRes(enum.Enum):
@@ -333,7 +367,7 @@ def _exception_handler(loop, context):
                     log.error('  %s', line)
     else:
         log.error('Traceback not available. Run with PYTHONASYNCIODEBUG=1')
-    machine.fatal_error()
+    machine.change_state_fatal_error()
 
 
 # # Not sure if this would actually work here. Maybe add to the logging config
@@ -360,7 +394,7 @@ def main(args, conf) -> None:
     os.makedirs(conf.getpath('measurer', 'keydir'), mode=0o700, exist_ok=True)
     machine = StateMachine(conf)
     loop.set_exception_handler(_exception_handler)
-    loop.call_soon(machine.starting)
+    loop.call_soon(machine.change_state_starting)
     try:
         loop.run_forever()
     finally:

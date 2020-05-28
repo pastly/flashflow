@@ -1,0 +1,1 @@
+- Coord sends config stuff to measurers. Such as timeouts
