@@ -6,9 +6,11 @@ import enum
 import logging
 import ssl
 import os
-from stem.control import Controller  # type: ignore
+from stem import CircStatus
+from stem.control import Controller, EventType  # type: ignore
+from stem.response.events import CircuitEvent  # type: ignore
 from transitions import Machine  # type: ignore
-from typing import Tuple, Union
+from typing import Tuple, Union, Set
 from .. import tor_client
 from .. import msg
 from ..tor_ctrl_msg import MeasrStartMeas
@@ -49,6 +51,9 @@ class States(enum.Enum):
     READY = enum.auto()
     # Got command from coordinator to connect to a relay. Doing it right now
     CREATE_CONN_W_RELAY = enum.auto()
+    # We're connected to the relay and ready to go. Just waiting for the start
+    # command from the coordinator
+    WAITING_TO_START = enum.auto()
     # There was some sort of error that calls for cleaning everything up and
     # essentially relaunching, but we shouldn't outright die.
     NONFATAL_ERROR = enum.auto()
@@ -79,11 +84,21 @@ class StateMachine(Machine):
     '''
     # conf  # This is set in __init__
     tor_client: Controller
+    # how we communicate with the coord
     coord_trans: asyncio.WriteTransport
     coord_proto: CoordProtocol
+    # keep track of which circs we've launched, and which of the launched circs
+    # have been built so far
+    launched_circs: Set[int]
+    built_circs: Set[int]
+    # keep a copy of ConnectToRelay command so we can send it back to the coord
+    # when we're ready to go (or have failed)
+    connect_msg: msg.ConnectToRelay
 
     def __init__(self, conf):
         self.conf = conf
+        self.launched_circs = set()
+        self.built_circs = set()
         super().__init__(
             model=self,
             states=States,
@@ -107,6 +122,11 @@ class StateMachine(Machine):
                     'trigger': 'change_state_recv_cmd_connect',
                     'source': States.READY,
                     'dest': States.CREATE_CONN_W_RELAY,
+                },
+                {
+                    'trigger': 'change_state_connected_to_relay',
+                    'source': States.CREATE_CONN_W_RELAY,
+                    'dest': States.WAITING_TO_START,
                 },
                 {
                     'trigger': 'change_state_nonfatal_error',
@@ -141,6 +161,7 @@ class StateMachine(Machine):
             log.error('Unable to launch and connect to tor client')
             self.change_state_fatal_error()
             return
+        c.add_event_listener(self.notif_circ_event, EventType.CIRC)
         self.tor_client = c
         self.change_state_connected_to_tor()
 
@@ -241,7 +262,28 @@ class StateMachine(Machine):
                 'Failed to start %d circuits to %s: %s' %
                 (message.n_circs, message.fp, ret))
             return
-        log.debug('%s', ret)
+        # We expect to see "250 LAUNCHED <circ_id>", e.g. "250 LAUNCHED 24".
+        # Get the circuit id out and save it for later use.
+        code, _, content = ret.content()[0]
+        assert code == '250'
+        parts = content.split(' ')
+        if len(parts) != 2 or parts[0] != 'LAUNCHED':
+            log.error('Did not expect body of message to be: %s', content)
+            self.change_state_nonfatal_error(
+                'Malformed response from tor: %s' % (ret,))
+            return
+        self.launched_circs.add(int(parts[1]))
+        log.info(
+            'Launched %d circuits with the relay: %s',
+            len(self.launched_circs), self.launched_circs)
+        self.connect_msg = message
+        # That's all for now. We stay in this state until Tor tells us it has
+        # finished building all circuits
+
+    def _tell_coord_ready_to_start(self, success: bool):
+        ''' Main function for the WAITING_TO_START state '''
+        m = msg.ConnectedToRelay(success, self.connect_msg)
+        self.coord_trans.write(m.serialize())
 
     # ########################################################################
     # STATE CHANGE EVENTS. These are called when entering the specified state.
@@ -265,6 +307,9 @@ class StateMachine(Machine):
 
     def on_enter_CREATE_CONN_W_RELAY(self, message: msg.ConnectToRelay):
         loop.call_soon(partial(self._create_conn_w_relay, message))
+
+    def on_enter_WAITING_TO_START(self, success: bool):
+        loop.call_soon(partial(self._tell_coord_ready_to_start, success))
 
     # ########################################################################
     # MESSAGES FROM COORD. These are called when the coordinator tells us
@@ -291,6 +336,67 @@ class StateMachine(Machine):
     def _recv_msg_failure(self, message: msg.Failure):
         self.change_state_nonfatal_error(
             'Coord-induced failure: ' + message.desc)
+        self._die()
+
+    # ########################################################################
+    # MISC EVENTS. These are called from other parts of the measr code.
+    # ########################################################################
+
+    def notif_circ_event(self, event: CircuitEvent):
+        ''' Called from stem to tell us about circuit events.
+
+        These events come from a different thread. We tell the main thread's
+        loop (in a threadsafe manner) to handle this event in the similarly
+        named function with a leading underscore.
+        '''
+        loop.call_soon_threadsafe(partial(self._notif_circ_event, event))
+
+    def _notif_circ_event(self, event: CircuitEvent):
+        ''' Actually handle the circuit event. We usually don't care, but
+        sometimes we are waiting on circuits to be built with a relay.
+
+        This runs in the main thread's loop unlike the similarly named function
+        (without a leading underscore) that tells the loop to call us.
+        '''
+        circ_id = int(event.id)
+        if circ_id not in self.launched_circs:
+            # log.warn(
+            #     'Ignoring CIRC event not for us. %d not in our list of ' +
+            #     'launched circs', circ_id)
+            return
+        # It's for us, and the circuit has just been built. It we're in the
+        # right state for this, continue on to the next state. Otherwise this
+        # was unexpected and should error out.
+        if event.status == CircStatus.BUILT:
+            if self.state == States.CREATE_CONN_W_RELAY:
+                assert circ_id in self.launched_circs
+                self.built_circs.add(circ_id)
+                log.debug(
+                    'Added circ %d to set of built circs. Now have %d/%d',
+                    circ_id, len(self.built_circs), len(self.launched_circs))
+                if len(self.built_circs) == len(self.launched_circs):
+                    log.info('Bult all circuits')
+                    self.change_state_connected_to_relay(True)
+            else:
+                self.change_state_nonfatal_error(
+                    'Found out circ %d is done building, but that '
+                    'shouldn\'t happen in state %s' %
+                    (circ_id, self.state))
+            return
+        # It's for us, and the circuit is still getting built. Don't care.
+        # Ignore.
+        elif event.status in [CircStatus.LAUNCHED, CircStatus.EXTENDED]:
+            # ignore these
+            return
+        # It's for us, and the circuit has been closed. TODO this might be fine
+        # in some case?
+        elif event.status == CircStatus.CLOSED:
+            log.warn('circ %d with relay closed', circ_id)
+            self.change_state_nonfatal_error(
+                'Circ %d closed unexpectedly' % (circ_id,))
+            return
+        # It's for us, but don't know how to handle it yet
+        log.warn('Not handling CIRC event for us: %s', event)
 
 
 class CoordConnRes(enum.Enum):

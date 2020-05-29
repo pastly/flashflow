@@ -8,7 +8,7 @@ import ssl
 from functools import partial
 from traceback import StackSummary
 from tempfile import NamedTemporaryFile
-from typing import Tuple, List, IO
+from typing import Tuple, List, IO, Set
 from .. import tor_client
 from ..tor_ctrl_msg import CoordStartMeas
 from .. import msg
@@ -38,6 +38,8 @@ class MeasrProtocol(asyncio.Protocol):
 
     def data_received(self, data: bytes):
         log.info('Received %d bytes: %s', len(data), data)
+        m = msg.FFMsg.deserialize(data)
+        machine.recv_measr_msg(self, m)
 
 
 class MStates(enum.Enum):
@@ -74,16 +76,18 @@ class MStateMachine(Machine):
            CLEANUP
     '''
     tor_client: Controller
-    measurers: MeasrProtocol
+    measurers: Set[MeasrProtocol]
+    ready_measurers: Set[MeasrProtocol]
     relay_fp: str
     relay_circ: int
 
     def __init__(
             self, tor_client: Controller, relay_fp: str,
-            measurers: List[MeasrProtocol]):
+            measurers: Set[MeasrProtocol]):
         self.tor_client = tor_client
         self.relay_fp = relay_fp
         self.measurers = measurers
+        self.ready_measurers = set()
         self.relay_circ = None
         super().__init__(
             model=self,
@@ -206,6 +210,20 @@ class MStateMachine(Machine):
     # ########################################################################
     # MISC EVENTS. These are called from other parts of the coord code.
     # ########################################################################
+
+    def recv_msg_connected_to_relay(
+            self, measr: MeasrProtocol, message: msg.ConnectedToRelay):
+        assert measr in self.measurers
+        if not message.success:
+            self._tell_all_failure(msg.Failure(
+                'A measurer failed to connect to the relay'))
+            return
+        self.ready_measurers.add(measr)
+        if len(self.ready_measurers) == len(self.measurers):
+            log.debug(
+                'All %d measurers have connected', len(self.ready_measurers))
+            self.change_state_measr_connected()
+            return
 
     def notif_circ_event(self, event: CircuitEvent):
         ''' Recieve a CIRC event from our tor client
@@ -482,6 +500,29 @@ class StateMachine(Machine):
     def on_enter_FATAL_ERROR(self):
         self._cleanup()
         self._die()
+
+    # ########################################################################
+    # MEASSAGES FROM MEASRs. These are called when a measurer tells us
+    # something.
+    # ########################################################################
+
+    def recv_measr_msg(self, measr: MeasrProtocol, message: msg.FFMsg):
+        ''' Receive a FFMsg object from one of our measurers '''
+        msg_type = type(message)
+        state = self.state
+        if msg_type == msg.ConnectedToRelay and state == States.READY:
+            assert isinstance(message, msg.ConnectedToRelay)
+            self._recv_msg_connected_to_relay(measr, message)
+            return
+        self.change_state_nonfatal_error(
+            'Unexpected %s message received in state %s',
+            msg_type, state)
+
+    def _recv_msg_connected_to_relay(
+            self, measr: MeasrProtocol, message: msg.ConnectedToRelay):
+        # TODO: be able to handle multiple measurements at once
+        for m in [m for m in self.measurements if measr in m.measurers]:
+            m.recv_msg_connected_to_relay(measr, message)
 
     # ########################################################################
     # MISC EVENTS. These are called from other parts of the coord code.
