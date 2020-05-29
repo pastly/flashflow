@@ -158,7 +158,7 @@ class MStateMachine(Machine):
 
     def _tell_measr_to_connect(self):
         ''' Main function for MEASR_CONNECTING state. '''
-        m = msg.ConnectToRelay(self.relay_fp)
+        m = msg.ConnectToRelay(self.relay_fp, 1)
         for measr in self.measurers:
             measr.transport.write(m.serialize())
 
@@ -176,6 +176,15 @@ class MStateMachine(Machine):
             finally:
                 self.relay_circ = None
 
+    def _tell_all_failure(self, f: msg.Failure):
+        log.error(f.desc)
+        for measr in self.measurers:
+            try:
+                measr.transport.write(f.serialize())
+            except Exception as e:
+                log.warn('Error sending Failure msg to measr: %s', e)
+                continue
+
     # ########################################################################
     # STATE CHANGE EVENTS. These are called when entering the specified state.
     # ########################################################################
@@ -187,8 +196,7 @@ class MStateMachine(Machine):
         loop.call_soon(self._tell_measr_to_connect)
 
     def on_enter_ERROR(self, err_str: str):
-        # In the future, inform all parties of the error first
-        log.error(err_str)
+        loop.call_soon(partial(self._tell_all_failure, msg.Failure(err_str)))
         loop.call_soon(partial(self.change_state_measurement_done, False))
 
     def on_enter_CLEANUP(self, success: bool):

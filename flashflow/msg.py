@@ -22,6 +22,7 @@ class MsgType(enum.Enum):
     '''
     CONNECT_TO_RELAY = 357
     CONNECTED_TO_RELAY = 78612
+    FAILURE = 62424
 
 
 class FFMsg:
@@ -39,6 +40,8 @@ class FFMsg:
             return ConnectToRelay.from_dict(j)
         elif msg_type == MsgType.CONNECTED_TO_RELAY:
             return ConnectedToRelay.from_dict(j)
+        elif msg_type == MsgType.FAILURE:
+            return Failure.from_dict(j)
         assert None, 'Unknown/unimplemented MsgType %d' % (j['msg_type'],)
 
 
@@ -47,21 +50,24 @@ class ConnectToRelay(FFMsg):
     specified relay. This message contains
 
     - the fingerprint of the relay the measurer should connect to
+    - the number of circuits they should open with the relay
     '''
     msg_type = MsgType.CONNECT_TO_RELAY
 
-    def __init__(self, fp: str):
+    def __init__(self, fp: str, n_circs: int):
         self.fp = fp
+        self.n_circs = n_circs
 
     def _to_dict(self) -> dict:
         return {
             'msg_type': self.msg_type.value,
             'fp': self.fp,
+            'n_circs': self.n_circs,
         }
 
     @staticmethod
     def from_dict(d: dict) -> 'ConnectToRelay':
-        return ConnectToRelay(d['fp'])
+        return ConnectToRelay(d['fp'], d['n_circs'])
 
 
 class ConnectedToRelay(FFMsg):
@@ -89,4 +95,28 @@ class ConnectedToRelay(FFMsg):
         return ConnectedToRelay(
             d['success'],
             ConnectToRelay.from_dict(d['orig']),
+        )
+
+
+class Failure(FFMsg):
+    ''' Coordinator <--> Measurer message indicating the sending party has
+    experienced some sort of error and the measurement should be halted.
+
+    - a str, containing a human-meaningful description of what happened
+    '''
+    msg_type = MsgType.FAILURE
+
+    def __init__(self, desc: str):
+        self.desc = desc
+
+    def _to_dict(self) -> dict:
+        return {
+            'msg_type': self.msg_type.value,
+            'desc': self.desc,
+        }
+
+    @staticmethod
+    def from_dict(d: dict) -> 'Failure':
+        return Failure(
+            d['desc'],
         )

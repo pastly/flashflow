@@ -22,8 +22,7 @@ class CoordProtocol(asyncio.Protocol):
         self.transport = transport
 
     def connection_lost(self, exc):
-        log.debug('Lost connection with coord')
-        machine.change_state_nonfatal_error()
+        machine.change_state_nonfatal_error('Lost connection with coord')
         pass
 
     def data_received(self, data: bytes):
@@ -233,7 +232,15 @@ class StateMachine(Machine):
     def _create_conn_w_relay(self, message: msg.ConnectToRelay):
         ''' Main function for the CREATE_CONN_W_TOR state '''
         ret = tor_client.send_msg(
-            self.tor_client, MeasrStartMeas(message.fp, 1))
+            self.tor_client, MeasrStartMeas(message.fp, message.n_circs))
+        # Make sure the circuit launches went well. Note they aren't built yet.
+        # It's just that tor found nothing obviously wrong with trying to build
+        # these circuits.
+        if not ret.is_ok():
+            self.change_state_nonfatal_error(
+                'Failed to start %d circuits to %s: %s' %
+                (message.n_circs, message.fp, ret))
+            return
         log.debug('%s', ret)
 
     # ########################################################################
@@ -246,7 +253,8 @@ class StateMachine(Machine):
     def on_enter_ENSURE_CONN_W_COORD(self):
         loop.call_soon(partial(self._ensure_conn_w_coord, 0.5))
 
-    def on_enter_NONFATAL_ERROR(self):
+    def on_enter_NONFATAL_ERROR(self, err_msg: str):
+        log.error(err_msg)
         self._cleanup()
         loop.call_soon(self.change_state_starting)
 
@@ -269,15 +277,20 @@ class StateMachine(Machine):
         if msg_type == msg.ConnectToRelay and state == States.READY:
             assert isinstance(message, msg.ConnectToRelay)
             self._recv_msg_connect_to_relay(message)
+        elif msg_type == msg.Failure:
+            self._recv_msg_failure(message)
         else:
-            log.warn(
-                'Unexpected %s message received in state %s',
-                msg_type, state)
-            self.change_state_nonfatal_error()
+            self.change_state_nonfatal_error(
+                'Unexpected %s message received in state %s' %
+                (msg_type, state))
 
     def _recv_msg_connect_to_relay(self, message: msg.ConnectToRelay):
         assert self.state == States.READY
         self.change_state_recv_cmd_connect(message)
+
+    def _recv_msg_failure(self, message: msg.Failure):
+        self.change_state_nonfatal_error(
+            'Coord-induced failure: ' + message.desc)
 
 
 class CoordConnRes(enum.Enum):
