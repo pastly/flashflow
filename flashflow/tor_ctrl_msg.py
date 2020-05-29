@@ -30,3 +30,15 @@ class CoordStartMeas(TorCtrlMsg):
 
     def __str__(self) -> str:
         return 'COORD_START_MEAS ' + self.nick_fp
+
+
+class MeasrStartMeas(TorCtrlMsg):
+    ''' Message sent from a FlashFlow measurer to its Tor client to instruct it
+    to open circuits with the given relay as part of the pre-measurement
+    process. '''
+    def __init__(self, nick_fp: str, n_circs: int):
+        self.nick_fp = nick_fp
+        self.n_circs = n_circs
+
+    def __str__(self) -> str:
+        return 'MEASR_START_MEAS %s %d' % (self.nick_fp, self.n_circs)

@@ -8,9 +8,10 @@ import ssl
 import os
 from stem.control import Controller  # type: ignore
 from transitions import Machine  # type: ignore
+from typing import Tuple, Union
 from .. import tor_client
 from .. import msg
-from typing import Tuple, Union
+from ..tor_ctrl_msg import MeasrStartMeas
 
 
 class CoordProtocol(asyncio.Protocol):
@@ -229,8 +230,11 @@ class StateMachine(Machine):
         ''' End execution of the program. '''
         loop.stop()
 
-    def _create_conn_w_tor(self, message: msg.ConnectToRelay):
-        log.debug('Need to create conn with Tor. Message: %s', message)
+    def _create_conn_w_relay(self, message: msg.ConnectToRelay):
+        ''' Main function for the CREATE_CONN_W_TOR state '''
+        ret = tor_client.send_msg(
+            self.tor_client, MeasrStartMeas(message.fp, 1))
+        log.debug('%s', ret)
 
     # ########################################################################
     # STATE CHANGE EVENTS. These are called when entering the specified state.
@@ -252,7 +256,7 @@ class StateMachine(Machine):
         self._die()
 
     def on_enter_CREATE_CONN_W_RELAY(self, message: msg.ConnectToRelay):
-        loop.call_soon(partial(self._create_conn_w_tor, message))
+        loop.call_soon(partial(self._create_conn_w_relay, message))
 
     # ########################################################################
     # MESSAGES FROM COORD. These are called when the coordinator tells us
@@ -274,9 +278,6 @@ class StateMachine(Machine):
     def _recv_msg_connect_to_relay(self, message: msg.ConnectToRelay):
         assert self.state == States.READY
         self.change_state_recv_cmd_connect(message)
-        # assert self.state == States.READY
-        # log.info('Got msg to connect to relay %s', message.fp)
-        # self.coord_trans.write(msg.ConnectedToRelay(True, message).serialize())
 
 
 class CoordConnRes(enum.Enum):
