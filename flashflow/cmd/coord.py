@@ -81,15 +81,17 @@ class MStateMachine(Machine):
     ready_measurers: Set[MeasrProtocol]
     relay_fp: str
     relay_circ: int
+    meas_duration: int
     # First int is sent, second is received. From that party's perspective.
     bg_reports: List[Tuple[int, int]]
     measr_reports: Dict[MeasrProtocol, Tuple[int, int]]
 
     def __init__(
-            self, tor_client: Controller, relay_fp: str,
+            self, tor_client: Controller, relay_fp: str, meas_duration: int,
             measurers: Set[MeasrProtocol]):
         self.tor_client = tor_client
         self.relay_fp = relay_fp
+        self.meas_duration = meas_duration
         self.measurers = measurers
         self.ready_measurers = set()
         self.relay_circ = None
@@ -145,7 +147,8 @@ class MStateMachine(Machine):
         # Send the command to our tor client to start a measurement with the
         # given relay
         ret = tor_client.send_msg(
-            self.tor_client, CoordStartMeas(self.relay_fp))
+            self.tor_client,
+            CoordStartMeas(self.relay_fp, self.meas_duration))
         # Make sure the circuit launch went well. Note it isn't built yet. It's
         # just that tor found nothing obviously wrong with trying to build this
         # circuit.
@@ -168,7 +171,8 @@ class MStateMachine(Machine):
 
     def _tell_measr_to_connect(self):
         ''' Main function for MEASR_CONNECTING state. '''
-        m = msg.ConnectToRelay(self.relay_fp, 1)
+        # TODO: num circuits as a param
+        m = msg.ConnectToRelay(self.relay_fp, 1, self.meas_duration)
         for measr in self.measurers:
             measr.transport.write(m.serialize())
 
@@ -199,7 +203,8 @@ class MStateMachine(Machine):
     def _tell_all_go(self):
         # Tell our tor client
         ret = tor_client.send_msg(
-            self.tor_client, CoordStartMeas(self.relay_fp))
+            self.tor_client,
+            CoordStartMeas(self.relay_fp, self.meas_duration))
         if not ret.is_ok():
             self.change_state_error(
                 "Unable to tell our tor client it\'s time to start "
@@ -212,11 +217,10 @@ class MStateMachine(Machine):
     def _have_all_reports(self):
         ''' Check if we have at least the expected number of per-second reports
         from the relay and from all of the measurers. '''
-        # TODO: get 30 from params cell
-        if len(self.bg_reports) < 30:
+        if len(self.bg_reports) < self.meas_duration:
             return False
         for measr_reports in self.measr_reports.values():
-            if len(measr_reports) < 30:
+            if len(measr_reports) < self.meas_duration:
                 return False
         return True
 
@@ -646,7 +650,10 @@ class StateMachine(Machine):
         log.debug('Now have %d measurers', len(self.measurers))
         # start a toy measurement for testing
         m = MStateMachine(
-            self.tor_client, 'relay1', [_ for _ in self.measurers])
+            self.tor_client,
+            'relay1',
+            self.conf.getint('meas_params', 'meas_duration'),
+            [_ for _ in self.measurers])
         m.change_state_starting()
         self.measurements.append(m)
 

@@ -286,7 +286,8 @@ class StateMachine(Machine):
     def _create_conn_w_relay(self, message: msg.ConnectToRelay):
         ''' Main function for the CREATE_CONN_W_TOR state '''
         ret = tor_client.send_msg(
-            self.tor_client, MeasrStartMeas(message.fp, message.n_circs))
+            self.tor_client,
+            MeasrStartMeas(message.fp, message.n_circs, message.dur))
         # Make sure the circuit launches went well. Note they aren't built yet.
         # It's just that tor found nothing obviously wrong with trying to build
         # these circuits.
@@ -320,7 +321,8 @@ class StateMachine(Machine):
 
     def _start_measuring(self):
         ''' Main function for the MEASUREMENT state '''
-        m = MeasrStartMeas(self.connect_msg.fp, len(self.built_circs))
+        m = MeasrStartMeas(
+            self.connect_msg.fp, len(self.built_circs), self.connect_msg.dur)
         ret = tor_client.send_msg(self.tor_client, m)
         if not ret.is_ok():
             self.change_state_nonfatal_error(

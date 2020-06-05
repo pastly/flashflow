@@ -25,11 +25,12 @@ class CoordStartMeas(TorCtrlMsg):
     it to start the measurement process with the given relay, identified by its
     nickname or fingerprint (you should always use fingerprint in practice).
     '''
-    def __init__(self, nick_fp: str):
+    def __init__(self, nick_fp: str, dur: int):
         self.nick_fp = nick_fp
+        self.dur = dur
 
     def __str__(self) -> str:
-        return 'COORD_START_MEAS ' + self.nick_fp
+        return 'COORD_START_MEAS %s %d' % (self.nick_fp, self.dur)
 
 
 class MeasrStartMeas(TorCtrlMsg):
@@ -40,9 +41,11 @@ class MeasrStartMeas(TorCtrlMsg):
 
     Later, when everything is setup and ready to go, it is used to tell the tor
     client to actually start sending measurement traffic with the relay.  '''
-    def __init__(self, nick_fp: str, n_circs: int):
+    def __init__(self, nick_fp: str, n_circs: int, dur: int):
         self.nick_fp = nick_fp
         self.n_circs = n_circs
+        self.dur = dur
 
     def __str__(self) -> str:
-        return 'MEASR_START_MEAS %s %d' % (self.nick_fp, self.n_circs)
+        return 'MEASR_START_MEAS %s %d %d' %\
+            (self.nick_fp, self.n_circs, self.dur)

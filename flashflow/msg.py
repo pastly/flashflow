@@ -57,23 +57,26 @@ class ConnectToRelay(FFMsg):
 
     - the fingerprint of the relay the measurer should connect to
     - the number of circuits they should open with the relay
+    - the duration of the active measurement phase, in seconds
     '''
     msg_type = MsgType.CONNECT_TO_RELAY
 
-    def __init__(self, fp: str, n_circs: int):
+    def __init__(self, fp: str, n_circs: int, dur: int):
         self.fp = fp
         self.n_circs = n_circs
+        self.dur = dur
 
     def _to_dict(self) -> dict:
         return {
             'msg_type': self.msg_type.value,
             'fp': self.fp,
             'n_circs': self.n_circs,
+            'dur': self.dur
         }
 
     @staticmethod
     def from_dict(d: dict) -> 'ConnectToRelay':
-        return ConnectToRelay(d['fp'], d['n_circs'])
+        return ConnectToRelay(d['fp'], d['n_circs'], d['dur'])
 
 
 class ConnectedToRelay(FFMsg):
