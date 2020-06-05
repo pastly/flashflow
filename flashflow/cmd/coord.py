@@ -7,8 +7,9 @@ import os
 import ssl
 from functools import partial
 from traceback import StackSummary
+from statistics import median
 from tempfile import NamedTemporaryFile
-from typing import Tuple, List, IO, Set
+from typing import Tuple, List, IO, Set, Dict
 from .. import tor_client
 from ..tor_ctrl_msg import CoordStartMeas
 from .. import msg
@@ -80,6 +81,9 @@ class MStateMachine(Machine):
     ready_measurers: Set[MeasrProtocol]
     relay_fp: str
     relay_circ: int
+    # First int is sent, second is received. From that party's perspective.
+    bg_reports: List[Tuple[int, int]]
+    measr_reports: Dict[MeasrProtocol, Tuple[int, int]]
 
     def __init__(
             self, tor_client: Controller, relay_fp: str,
@@ -89,6 +93,8 @@ class MStateMachine(Machine):
         self.measurers = measurers
         self.ready_measurers = set()
         self.relay_circ = None
+        self.bg_reports = []
+        self.measr_reports = {m: [] for m in self.measurers}
         super().__init__(
             model=self,
             states=MStates,
@@ -181,6 +187,7 @@ class MStateMachine(Machine):
                 self.relay_circ = None
 
     def _tell_all_failure(self, f: msg.Failure):
+        # TODO: tell tor client too
         log.error(f.desc)
         for measr in self.measurers:
             try:
@@ -188,6 +195,52 @@ class MStateMachine(Machine):
             except Exception as e:
                 log.warn('Error sending Failure msg to measr: %s', e)
                 continue
+
+    def _tell_all_go(self):
+        # Tell our tor client
+        ret = tor_client.send_msg(
+            self.tor_client, CoordStartMeas(self.relay_fp))
+        if not ret.is_ok():
+            self.change_state_error(
+                "Unable to tell our tor client it\'s time to start "
+                "active measurement")
+            return
+        # Tell the measurers
+        for m in self.ready_measurers:
+            m.transport.write(msg.Go().serialize())
+
+    def _have_all_reports(self):
+        ''' Check if we have at least the expected number of per-second reports
+        from the relay and from all of the measurers. '''
+        # TODO: get 30 from params cell
+        if len(self.bg_reports) < 30:
+            return False
+        for measr_reports in self.measr_reports.values():
+            if len(measr_reports) < 30:
+                return False
+        return True
+
+    def _write_measurement_results(self):
+        ''' Called when we have successfully completed a measurement and should
+        write out measurement results to our file. That's not implemented yet,
+        but we can at least log information about the measurment. '''
+        # Create a list of lists. Each sublist is the per-second results from a
+        # single party
+        # Take the minimum of send/recv from the relay's bg reports for each
+        # second
+        per_second_result_lists = [[min(s, r) for s, r in self.bg_reports]]
+        # Always take the recv side of measurer reports since that's the only
+        # side that definitely made it back from the relay
+        for measr_report in self.measr_reports.values():
+            per_second_result_lists.append([r for _, r in measr_report])
+        # Calculate each second's aggregate bytes
+        aggs = []
+        for per_second_vals in zip(*per_second_result_lists):
+            aggs.append(sum(per_second_vals))
+        # Calculate the median over all seconds
+        res = median(aggs)
+        # Log as Mbit/s
+        log.info('%s was measured at %.2f Mbit/s', self.relay_fp, res*8/1e6)
 
     # ########################################################################
     # STATE CHANGE EVENTS. These are called when entering the specified state.
@@ -199,11 +252,16 @@ class MStateMachine(Machine):
     def on_enter_MEASR_CONNECTING(self):
         loop.call_soon(self._tell_measr_to_connect)
 
+    def on_enter_MEASUREMENT(self):
+        loop.call_soon(self._tell_all_go)
+
     def on_enter_ERROR(self, err_str: str):
         loop.call_soon(partial(self._tell_all_failure, msg.Failure(err_str)))
         loop.call_soon(partial(self.change_state_measurement_done, False))
 
     def on_enter_CLEANUP(self, success: bool):
+        if success:
+            loop.call_soon(self._write_measurement_results)
         loop.call_soon(self._cleanup)
         loop.call_soon(partial(machine.notif_measurement_done, self, success))
 
@@ -213,6 +271,10 @@ class MStateMachine(Machine):
 
     def recv_msg_connected_to_relay(
             self, measr: MeasrProtocol, message: msg.ConnectedToRelay):
+        ''' Receive a ConnectedToRelay FFMsg from a measurer. The main coord
+        state machine has relayed to this because the sending measurer is one
+        of ours.
+        '''
         assert measr in self.measurers
         if not message.success:
             self._tell_all_failure(msg.Failure(
@@ -224,6 +286,22 @@ class MStateMachine(Machine):
                 'All %d measurers have connected', len(self.ready_measurers))
             self.change_state_measr_connected()
             return
+
+    def recv_msg_measr_bw_report(
+            self, measr: MeasrProtocol, message: msg.BwReport):
+        ''' Receive a BwReport FFMsg from a measurer. The main coord
+        state machine has relayed to this because the sending measurer is one
+        of ours.
+        '''
+        assert measr in self.measr_reports
+        self.measr_reports[measr].append((message.sent, message.recv))
+        log.debug(
+            'BwReport #%d says %d/%d sent/recv measr bytes',
+            len(self.measr_reports[measr]),
+            message.sent, message.recv)
+        if self._have_all_reports():
+            self.change_state_measurement_done(True)
+        return
 
     def notif_circ_event(self, event: CircuitEvent):
         ''' Recieve a CIRC event from our tor client
@@ -268,6 +346,11 @@ class MStateMachine(Machine):
             self.change_state_error(
                 'Circ %d closed unexpectedly' % (int(event.id),))
             return
+        elif event.status == CircStatus.FAILED:
+            log.error('circ %d entered failed state: %s', int(event.id), event)
+            self.change_state_error(
+                'Cird %d failed' % (int(event.id),))
+            return
         # It's for us, but don't know how to handle it yet
         log.warn('Not handling CIRC event for us: %s', event)
 
@@ -301,6 +384,14 @@ class MStateMachine(Machine):
                 self.change_state_error('Relay rejected measurement params')
                 return
             self.change_state_params_accepted()
+            return
+        elif event.ffmeas_type == 'BW_REPORT':
+            self.bg_reports.append((event.sent, event.recv))
+            log.debug(
+                'BW_REPORT #%d says %d/%d sent/recv background bytes',
+                len(self.bg_reports), event.sent, event.recv)
+            if self._have_all_reports():
+                self.change_state_measurement_done(True)
             return
         # It's for us, but don't know how to handle it yet
         log.warn('Not handling FF_MEAS event that is for us: %s', event)
@@ -493,8 +584,9 @@ class StateMachine(Machine):
     def on_enter_READY(self):
         pass
 
-    def on_enter_NONFATAL_ERROR(self):
+    def on_enter_NONFATAL_ERROR(self, err_msg):
         self._cleanup()
+        log.error(err_msg)
         loop.call_soon(self.change_state_starting)
 
     def on_enter_FATAL_ERROR(self):
@@ -511,18 +603,28 @@ class StateMachine(Machine):
         msg_type = type(message)
         state = self.state
         if msg_type == msg.ConnectedToRelay and state == States.READY:
-            assert isinstance(message, msg.ConnectedToRelay)
+            assert isinstance(message, msg.ConnectedToRelay)  # so mypy knows
             self._recv_msg_connected_to_relay(measr, message)
             return
+        elif msg_type == msg.BwReport and state == States.READY:
+            assert isinstance(message, msg.BwReport)  # so mypy knows
+            self._recv_msg_measr_bw_report(measr, message)
+            return
         self.change_state_nonfatal_error(
-            'Unexpected %s message received in state %s',
-            msg_type, state)
+            'Unexpected %s message received in state %s' %
+            (msg_type, state))
 
     def _recv_msg_connected_to_relay(
             self, measr: MeasrProtocol, message: msg.ConnectedToRelay):
         # TODO: be able to handle multiple measurements at once
         for m in [m for m in self.measurements if measr in m.measurers]:
             m.recv_msg_connected_to_relay(measr, message)
+
+    def _recv_msg_measr_bw_report(
+            self, measr: MeasrProtocol, message: msg.BwReport):
+        # TODO: be able to handle multiple measurements at once
+        for m in [m for m in self.measurements if measr in m.measurers]:
+            m.recv_msg_measr_bw_report(measr, message)
 
     # ########################################################################
     # MISC EVENTS. These are called from other parts of the coord code.

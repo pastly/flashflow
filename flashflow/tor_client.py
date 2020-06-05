@@ -26,6 +26,11 @@ TORRC_BASE: Dict[str, Union[str, List]] = {
     # To make logs more useful
     'SafeLogging': '0',
     'LogTimeGranularity': '1',
+    # We want measurers to be sending as much as possible, and for coordinators
+    # it doesn't matter. KIST has poor single-socket performance, and while we
+    # do measure with more than one socket, this won't hurt.
+    # https://bugs.torproject.org/29427
+    'Schedulers': 'Vanilla',
 }
 
 

@@ -33,9 +33,13 @@ class CoordStartMeas(TorCtrlMsg):
 
 
 class MeasrStartMeas(TorCtrlMsg):
-    ''' Message sent from a FlashFlow measurer to its Tor client to instruct it
-    to open circuits with the given relay as part of the pre-measurement
-    process. '''
+    ''' Dual-purpose message sent from a FlashFlow measurer to its Tor client.
+
+    First it's used to tell it to open circuits with the given relay as part of
+    the pre-measurement process.
+
+    Later, when everything is setup and ready to go, it is used to tell the tor
+    client to actually start sending measurement traffic with the relay.  '''
     def __init__(self, nick_fp: str, n_circs: int):
         self.nick_fp = nick_fp
         self.n_circs = n_circs

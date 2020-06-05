@@ -23,6 +23,8 @@ class MsgType(enum.Enum):
     CONNECT_TO_RELAY = 357
     CONNECTED_TO_RELAY = 78612
     FAILURE = 62424
+    GO = 1089
+    BW_REPORT = -289
 
 
 class FFMsg:
@@ -42,6 +44,10 @@ class FFMsg:
             return ConnectedToRelay.from_dict(j)
         elif msg_type == MsgType.FAILURE:
             return Failure.from_dict(j)
+        elif msg_type == MsgType.GO:
+            return Go.from_dict(j)
+        elif msg_type == MsgType.BW_REPORT:
+            return BwReport.from_dict(j)
         assert None, 'Unknown/unimplemented MsgType %d' % (j['msg_type'],)
 
 
@@ -120,3 +126,42 @@ class Failure(FFMsg):
         return Failure(
             d['desc'],
         )
+
+
+class Go(FFMsg):
+    ''' Coordinator --> Measurer message indicating its time to start the
+    measurement '''
+    msg_type = MsgType.GO
+
+    def __init__(self):
+        pass
+
+    def _to_dict(self) -> dict:
+        return {
+            'msg_type': self.msg_type.value,
+        }
+
+    @staticmethod
+    def from_dict(d: dict) -> 'Go':
+        return Go()
+
+
+class BwReport(FFMsg):
+    ''' Measurer --> Coordinator message containing the number of sent and
+    received bytes with the target relay in the last second '''
+    msg_type = MsgType.BW_REPORT
+
+    def __init__(self, sent: int, recv: int):
+        self.sent = sent
+        self.recv = recv
+
+    def _to_dict(self) -> dict:
+        return {
+            'msg_type': self.msg_type.value,
+            'sent': self.sent,
+            'recv': self.recv,
+        }
+
+    @staticmethod
+    def from_dict(d: dict) -> 'BwReport':
+        return BwReport(d['sent'], d['recv'])

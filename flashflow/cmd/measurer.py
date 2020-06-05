@@ -6,9 +6,9 @@ import enum
 import logging
 import ssl
 import os
-from stem import CircStatus
+from stem import CircStatus, InvalidArguments
 from stem.control import Controller, EventType  # type: ignore
-from stem.response.events import CircuitEvent  # type: ignore
+from stem.response.events import CircuitEvent, FFMeasEvent  # type: ignore
 from transitions import Machine  # type: ignore
 from typing import Tuple, Union, Set
 from .. import tor_client
@@ -54,6 +54,8 @@ class States(enum.Enum):
     # We're connected to the relay and ready to go. Just waiting for the start
     # command from the coordinator
     WAITING_TO_START = enum.auto()
+    # We've been told go. It's time to start measuring
+    MEASUREMENT = enum.auto()
     # There was some sort of error that calls for cleaning everything up and
     # essentially relaunching, but we shouldn't outright die.
     NONFATAL_ERROR = enum.auto()
@@ -129,6 +131,16 @@ class StateMachine(Machine):
                     'dest': States.WAITING_TO_START,
                 },
                 {
+                    'trigger': 'change_state_told_go',
+                    'source': States.WAITING_TO_START,
+                    'dest': States.MEASUREMENT,
+                },
+                {
+                    'trigger': 'change_state_finished',
+                    'source': States.MEASUREMENT,
+                    'dest': States.READY,
+                },
+                {
                     'trigger': 'change_state_nonfatal_error',
                     'source': '*',
                     'dest': States.NONFATAL_ERROR,
@@ -162,6 +174,7 @@ class StateMachine(Machine):
             self.change_state_fatal_error()
             return
         c.add_event_listener(self.notif_circ_event, EventType.CIRC)
+        c.add_event_listener(self.notif_ffmeas_event, EventType.FF_MEAS)
         self.tor_client = c
         self.change_state_connected_to_tor()
 
@@ -226,7 +239,27 @@ class StateMachine(Machine):
         # eventually be called with the connection results. Nothing left to do
         # for now.
 
-    def _cleanup(self):
+    def _single_meas_cleanup(self):
+        ''' Cleanup all state associated with a specific measurement. Do not
+        disconnect from anybody. Use this when a measurement has ended
+        successfully. '''
+        self.launched_circs = set()
+        for circ_id in self.built_circs:
+            try:
+                self.tor_client.close_circuit(circ_id)
+            except InvalidArguments:
+                # We'll get this if the circuit has already been closed. It's
+                # fine. It could have been the tor client closing the circuit
+                # itself.
+                pass
+            except Exception as e:
+                log.warn(
+                    'Exception trying to close circ %d: %s %s', circ_id,
+                    type(e), e)
+        self.built_circs = set()
+        self.connect_msg = None
+
+    def _complete_cleanup(self):
         ''' Cleanup all of our state while being very careful to not allow any
         exceptions to bubble up. Use this when in an error state and you want
         to cleanup before starting over or just dying. '''
@@ -285,9 +318,31 @@ class StateMachine(Machine):
         m = msg.ConnectedToRelay(success, self.connect_msg)
         self.coord_trans.write(m.serialize())
 
+    def _start_measuring(self):
+        ''' Main function for the MEASUREMENT state '''
+        m = MeasrStartMeas(self.connect_msg.fp, len(self.built_circs))
+        ret = tor_client.send_msg(self.tor_client, m)
+        if not ret.is_ok():
+            self.change_state_nonfatal_error(
+                'Unable to tell tor to start active measurement: %s', ret)
+            return
+
+    def _tell_all_failure(self, f: msg.Failure):
+        # TODO: tell tor client too
+        log.error(f.desc)
+        try:
+            self.coord_trans.write(f.serialize())
+        except Exception as e:
+            log.err('Tried sending Failure to coord, but: %s', e)
+            pass
+        return
+
     # ########################################################################
     # STATE CHANGE EVENTS. These are called when entering the specified state.
     # ########################################################################
+
+    def on_enter_READY(self):
+        loop.call_soon(self._single_meas_cleanup)
 
     def on_enter_ENSURE_CONN_W_TOR(self):
         loop.call_soon(self._ensure_conn_w_tor)
@@ -296,13 +351,13 @@ class StateMachine(Machine):
         loop.call_soon(partial(self._ensure_conn_w_coord, 0.5))
 
     def on_enter_NONFATAL_ERROR(self, err_msg: str):
-        log.error(err_msg)
-        self._cleanup()
+        loop.call_soon(self._tell_all_failure, msg.Failure(err_msg))
+        loop.call_soon(self._complete_cleanup)
         loop.call_soon(self.change_state_starting)
 
     def on_enter_FATAL_ERROR(self):
         # log.error('We encountered a fatal error :(')
-        self._cleanup()
+        self._complete_cleanup()
         self._die()
 
     def on_enter_CREATE_CONN_W_RELAY(self, message: msg.ConnectToRelay):
@@ -310,6 +365,9 @@ class StateMachine(Machine):
 
     def on_enter_WAITING_TO_START(self, success: bool):
         loop.call_soon(partial(self._tell_coord_ready_to_start, success))
+
+    def on_enter_MEASUREMENT(self):
+        loop.call_soon(self._start_measuring)
 
     # ########################################################################
     # MESSAGES FROM COORD. These are called when the coordinator tells us
@@ -324,6 +382,8 @@ class StateMachine(Machine):
             self._recv_msg_connect_to_relay(message)
         elif msg_type == msg.Failure:
             self._recv_msg_failure(message)
+        elif msg_type == msg.Go:
+            self._recv_msg_go(message)
         else:
             self.change_state_nonfatal_error(
                 'Unexpected %s message received in state %s' %
@@ -338,9 +398,47 @@ class StateMachine(Machine):
             'Coord-induced failure: ' + message.desc)
         self._die()
 
+    def _recv_msg_go(self, message: msg.Go):
+        self.change_state_told_go()
+
     # ########################################################################
     # MISC EVENTS. These are called from other parts of the measr code.
     # ########################################################################
+
+    def notif_ffmeas_event(self, event: FFMeasEvent):
+        ''' Called from stem to tell us about FF_MEAS events.
+
+        These events come from a different thread. We tell the main thread's
+        loop (in a threadsafe manner) to handle this event in the similarly
+        named function with a leading underscore.
+        '''
+        loop.call_soon_threadsafe(partial(self._notif_ffmeas_event, event))
+
+    def _notif_ffmeas_event(self, event: FFMeasEvent):
+        ''' Actually handle the FF_MEAS event.
+
+        We look for:
+        - per-second BW_REPORTs of the amount of measurement traffic sent and
+        received, and we will fowarded those on to the coordinator.
+        - a END message at the end signally success.
+        '''
+        if event.ffmeas_type == 'BW_REPORT':
+            log.debug(
+                'Forwarding report of %d/%d sent/recv meas bytes',
+                event.sent, event.recv)
+            report = msg.BwReport(event.sent, event.recv)
+            self.coord_trans.write(report.serialize())
+            return
+        elif event.ffmeas_type == 'END':
+            if event.success:
+                self.change_state_finished()
+            else:
+                self.change_state_nonfatal_error(
+                    'Got non-successful END message from tor client')
+            return
+        self.change_state_nonfatal_error(
+            'Unexpected FF_MEAS event type %s' % (event.ffmeas_type,))
+        return
 
     def notif_circ_event(self, event: CircuitEvent):
         ''' Called from stem to tell us about circuit events.
@@ -359,6 +457,10 @@ class StateMachine(Machine):
         (without a leading underscore) that tells the loop to call us.
         '''
         circ_id = int(event.id)
+        # We don't care about anything if we're just idle waiting
+        if self.state == States.READY:
+            return
+        # Make sure it's a circuit we care about
         if circ_id not in self.launched_circs:
             # log.warn(
             #     'Ignoring CIRC event not for us. %d not in our list of ' +
@@ -394,6 +496,11 @@ class StateMachine(Machine):
             log.warn('circ %d with relay closed', circ_id)
             self.change_state_nonfatal_error(
                 'Circ %d closed unexpectedly' % (circ_id,))
+            return
+        elif event.status == CircStatus.FAILED:
+            log.error('circ %d entered failed state: %s', circ_id, event)
+            self.change_state_nonfatal_error(
+                'Cird %d failed' % (circ_id,))
             return
         # It's for us, but don't know how to handle it yet
         log.warn('Not handling CIRC event for us: %s', event)
