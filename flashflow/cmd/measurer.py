@@ -296,17 +296,24 @@ class StateMachine(Machine):
                 'Failed to start %d circuits to %s: %s' %
                 (message.n_circs, message.fp, ret))
             return
-        # We expect to see "250 LAUNCHED <circ_id>", e.g. "250 LAUNCHED 24".
-        # Get the circuit id out and save it for later use.
+        # We expect to see "250 FF_MEAS 0 LAUNCHED CIRCS=1,2,3,4,5", where the
+        # 0 is just a placeholder and the actual list of launched circuits is
+        # CIRCS the comma-separated list
         code, _, content = ret.content()[0]
-        assert code == '250'
-        parts = content.split(' ')
-        if len(parts) != 2 or parts[0] != 'LAUNCHED':
+        parts = content.split()
+        if code != '250':
+            log.error('Got non-success code %s: %s', code, content)
+            self.change_state_nonfatal_error(
+                'Malformed response from tor: %s' % (ret,))
+            return
+        if len(parts) != 4 or \
+                not content.startswith('FF_MEAS 0 LAUNCHED CIRCS='):
             log.error('Did not expect body of message to be: %s', content)
             self.change_state_nonfatal_error(
                 'Malformed response from tor: %s' % (ret,))
             return
-        self.launched_circs.add(int(parts[1]))
+        for circ_id_str in parts[3].split('=')[1].split(','):
+            self.launched_circs.add(int(circ_id_str))
         log.info(
             'Launched %d circuits with the relay: %s',
             len(self.launched_circs), self.launched_circs)

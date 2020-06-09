@@ -1,1 +1,11 @@
-- Coord sends config stuff to measurers. Such as timeouts
+- [ ] coord sends config stuff to measurers. Such as timeouts
+- [x] measr's tor client send echo traffic.
+- [x] relay echo traffic.
+- [x] relay report BG traffic.
+- [ ] more than one measurement circuit (and connection) with relay.
+- [x] relay handle echo traffic separately.
+- [ ] relay limit about of BG traffic.
+- [ ] measr and its tor client handle multiple measurements at once.
+- [ ] coord and its tor client handle multiple measurements at once.
+- [x] actually use 30s from params everywhere
+- [ ] actually cap relay's reported bg traffic at the coord

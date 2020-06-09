@@ -162,8 +162,9 @@ class MStateMachine(Machine):
         assert code == '250'
         parts = content.split(' ')
         if len(parts) != 2 or parts[0] != 'LAUNCHED':
-            log.error('Did not expect body of message to be: %s', content)
-            self.change_state_error()
+            self.change_state_error(
+                'Did not expect body of message to be: %s' % (content,))
+            return
         self.relay_circ = int(parts[1])
         log.info('Circ %d is our circuit with the relay', self.relay_circ)
         # That's all for now. We stay in this state until Tor tells us it has
@@ -172,7 +173,7 @@ class MStateMachine(Machine):
     def _tell_measr_to_connect(self):
         ''' Main function for MEASR_CONNECTING state. '''
         # TODO: num circuits as a param
-        m = msg.ConnectToRelay(self.relay_fp, 1, self.meas_duration)
+        m = msg.ConnectToRelay(self.relay_fp, 10, self.meas_duration)
         for measr in self.measurers:
             measr.transport.write(m.serialize())
 
