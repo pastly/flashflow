@@ -84,16 +84,19 @@ class MStateMachine(Machine):
     relay_fp: str
     relay_circ: int
     meas_duration: int
+    bg_percent: float
     # First int is sent, second is received. From that party's perspective.
     bg_reports: List[Tuple[int, int]]
     measr_reports: Dict[MeasrProtocol, Tuple[int, int]]
 
     def __init__(
-            self, tor_client: Controller, relay_fp: str, meas_duration: int,
+            self, tor_client: Controller, relay_fp: str,
+            meas_duration: int, bg_percent: float,
             measurers: Set[MeasrProtocol]):
         self.tor_client = tor_client
         self.relay_fp = relay_fp
         self.meas_duration = meas_duration
+        self.bg_percent = bg_percent
         self.measurers = measurers
         self.ready_measurers = set()
         self.relay_circ = None
@@ -263,7 +266,7 @@ class MStateMachine(Machine):
             #     bg * (frac - 1)         = -frac * meas
             #     bg                      = (-frac * meas) / (frac - 1)
             #     bg                      = (frac * meas) / (1 - frac)
-            frac = 0.25
+            frac = self.bg_percent
             meas = sum([
                 measr_report[sec_i] for measr_report in measr_reports])
             max_bg = frac * meas / (1 - frac)
@@ -690,6 +693,7 @@ class StateMachine(Machine):
             self.tor_client,
             'relay1',
             self.conf.getint('meas_params', 'meas_duration'),
+            self.conf.getfloat('meas_params', 'bg_percent'),
             [_ for _ in self.measurers])
         m.change_state_starting()
         self.measurements.append(m)
