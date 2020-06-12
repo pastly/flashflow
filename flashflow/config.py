@@ -22,6 +22,23 @@ def get_config(user_conf_fname: Optional[str]):
 
 
 def config_logging(conf):
+    ###########################################################################
+    # Apply the user's actual desired path for per-second measurement results.
+    # It's weird because the logging config system wants a 4-tuple of args ...
+    # as a str.
+    # arg 1: the filename
+    os.makedirs(conf.getpath('coord', 'resultsdir'), mode=0o700, exist_ok=True)
+    fname = conf.getpath('coord', 'results_log')
+    # arg 2 and 3: the mode, the encoding
+    mode, encoding = 'a', None
+    # arg 4: whether to delay opening the file until first writing
+    delay = True
+    # now overwrite the config value
+    conf['handler_results']['args'] = str((fname, mode, encoding, delay))
+    ###########################################################################
+    # Write out the conf we are storing in memory to a temporary file, as the
+    # file-based configuration of the logging system requires a file with a
+    # filename.
     with NamedTemporaryFile('w+t') as fd:
         conf.write(fd)
         fd.seek(0, 0)
