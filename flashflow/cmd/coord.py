@@ -5,12 +5,14 @@ import glob
 import logging
 import os
 import ssl
+import time
 from functools import partial
 from traceback import StackSummary
 from statistics import median
 from tempfile import NamedTemporaryFile
 from typing import Tuple, List, IO, Set, Dict
 from .. import tor_client
+from .. import results_logger
 from ..tor_ctrl_msg import CoordStartMeas
 from .. import msg
 import stem  # type: ignore
@@ -229,23 +231,57 @@ class MStateMachine(Machine):
         ''' Called when we have successfully completed a measurement and should
         write out measurement results to our file. That's not implemented yet,
         but we can at least log information about the measurment. '''
-        # Create a list of lists. Each sublist is the per-second results from a
-        # single party
+        # TODO: actual timestamps
+        now = int(time.time())
+        results_logger.write_begin(self.relay_fp, now)
         # Take the minimum of send/recv from the relay's bg reports for each
-        # second
-        per_second_result_lists = [[min(s, r) for s, r in self.bg_reports]]
+        # second. These are untrusted results because the relay may have lied
+        # about having a massive amount of background traffic
+        bg_report_untrust = [min(s, r) for s, r in self.bg_reports]
         # Always take the recv side of measurer reports since that's the only
         # side that definitely made it back from the relay
+        measr_reports = []
         for measr_report in self.measr_reports.values():
-            per_second_result_lists.append([r for _, r in measr_report])
+            measr_reports.append([r for _, r in measr_report])
+            for res in measr_reports[-1]:
+                results_logger.write_meas(self.relay_fp, now, res)
+        # For each second, cap the amount of claimed bg traffic to the maximum
+        # amount we will trust. I.e. if the relay is supposed to reserve no
+        # more than 25% of its capacity for bg traffic, make sure the reported
+        # background traffic is no more than 25% of all data we have for that
+        # second.
+        # TODO: make the fraction configurable
+        bg_report_trust = []
+        for sec_i, bg_untrust in enumerate(bg_report_untrust):
+            # The relay is supposed to be throttling its bg traffic such that
+            # it is no greater than some fraction of total traffic.
+            #     frac = bg / (bg + meas)
+            # We know and trust meas. We know frac. Thus we can solve for the
+            # maximum allowed bg:
+            #     frac * bg + frac * meas = bg
+            #     frac * bg - bg          = -frac * meas
+            #     bg * (frac - 1)         = -frac * meas
+            #     bg                      = (-frac * meas) / (frac - 1)
+            #     bg                      = (frac * meas) / (1 - frac)
+            frac = 0.25
+            meas = sum([
+                measr_report[sec_i] for measr_report in measr_reports])
+            max_bg = frac * meas / (1 - frac)
+            if bg_untrust > max_bg:
+                log.warn(
+                    'Capping %s\'s reported bg to %d as %d is too much',
+                    self.relay_fp, max_bg, bg_untrust)
+            bg_report_trust.append(min(bg_untrust, max_bg))
+            results_logger.write_bg(self.relay_fp, now, bg_untrust, max_bg)
         # Calculate each second's aggregate bytes
-        aggs = []
-        for per_second_vals in zip(*per_second_result_lists):
-            aggs.append(sum(per_second_vals))
+        aggs = [
+            sum(sec_i_vals) for sec_i_vals
+            in zip(bg_report_trust, *measr_reports)]
         # Calculate the median over all seconds
         res = median(aggs)
         # Log as Mbit/s
         log.info('%s was measured at %.2f Mbit/s', self.relay_fp, res*8/1e6)
+        results_logger.write_end(self.relay_fp, now)
 
     # ########################################################################
     # STATE CHANGE EVENTS. These are called when entering the specified state.
