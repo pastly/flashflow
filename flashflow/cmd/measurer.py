@@ -6,7 +6,7 @@ import enum
 import logging
 import ssl
 import os
-from stem import CircStatus, InvalidArguments
+from stem import CircStatus, InvalidArguments  # type: ignore
 from stem.control import Controller, EventType  # type: ignore
 from stem.response.events import CircuitEvent, FFMeasEvent  # type: ignore
 from transitions import Machine  # type: ignore
@@ -342,7 +342,7 @@ class StateMachine(Machine):
         try:
             self.coord_trans.write(f.serialize())
         except Exception as e:
-            log.err('Tried sending Failure to coord, but: %s', e)
+            log.error('Tried sending Failure to coord, but: %s', e)
             pass
         return
 
@@ -386,12 +386,15 @@ class StateMachine(Machine):
     def recv_coord_msg(self, message: msg.FFMsg):
         msg_type = type(message)
         state = self.state
+        # The asserts below are for shutting up mypy
         if msg_type == msg.ConnectToRelay and state == States.READY:
             assert isinstance(message, msg.ConnectToRelay)
             self._recv_msg_connect_to_relay(message)
         elif msg_type == msg.Failure:
+            assert isinstance(message, msg.Failure)
             self._recv_msg_failure(message)
         elif msg_type == msg.Go:
+            assert isinstance(message, msg.Go)
             self._recv_msg_go(message)
         else:
             self.change_state_nonfatal_error(

@@ -10,13 +10,13 @@ from functools import partial
 from traceback import StackSummary
 from statistics import median
 from tempfile import NamedTemporaryFile
-from typing import Tuple, List, IO, Set, Dict
+from typing import Tuple, List, IO, Set, Dict, Optional
 from .. import tor_client
 from .. import results_logger
 from ..tor_ctrl_msg import CoordStartMeas
 from .. import msg
 import stem  # type: ignore
-from stem import CircStatus  # type: ignore
+from stem import CircStatus
 from stem.control import Controller, EventType  # type: ignore
 from stem.response.events import CircuitEvent, FFMeasEvent  # type: ignore
 from transitions import Machine  # type: ignore
@@ -28,7 +28,7 @@ class MeasrProtocol(asyncio.Protocol):
     Very little should be done here. Parse the bytes then give objects to the
     main state machines to handle.
     '''
-    transport = None
+    transport: Optional[asyncio.Transport] = None
 
     def connection_made(self, transport):
         # TODO: log host:port of measurer
@@ -98,8 +98,8 @@ class MStateMachine(Machine):
     ready_measurers: Set[MeasrProtocol]
     #: The fingerprint of the relay to measure.
     relay_fp: str
-    #: Our circuit id with the relay.
-    relay_circ: int
+    #: Our circuit id with the relay. Filled in once we actually have one
+    relay_circ: Optional[int]
     #: The duration, in seconds, that active measurement should last.
     meas_duration: int
     #: The percent of background traffic, as a fraction between 0 and 1, that
@@ -112,7 +112,7 @@ class MStateMachine(Machine):
     #: Per-second reports from the measurers with the number of bytes of
     #: measurement traffic. Each tuple is ``(sent_bytes, received_bytes)``,
     #: where sent/received are from the measurer's perspective.
-    measr_reports: Dict[MeasrProtocol, Tuple[int, int]]
+    measr_reports: Dict[MeasrProtocol, List[Tuple[int, int]]]
 
     def __init__(
             self, tor_client: Controller, relay_fp: str,
@@ -231,11 +231,15 @@ class MStateMachine(Machine):
         # TODO: tell tor client too
         log.error(f.desc)
         for measr in self.measurers:
-            try:
-                measr.transport.write(f.serialize())
-            except Exception as e:
-                log.warn('Error sending Failure msg to measr: %s', e)
-                continue
+            if measr.transport:
+                try:
+                    measr.transport.write(f.serialize())
+                except Exception as e:
+                    log.warn('Error sending Failure msg to measr: %s', e)
+                    continue
+            else:
+                log.error(
+                    '%s has no transport, cannot tell it about failure', measr)
 
     def _tell_all_go(self):
         # Tell our tor client
@@ -725,7 +729,7 @@ class StateMachine(Machine):
             'relay1',
             self.conf.getint('meas_params', 'meas_duration'),
             self.conf.getfloat('meas_params', 'bg_percent'),
-            [_ for _ in self.measurers])
+            {_ for _ in self.measurers})
         m.change_state_starting()
         self.measurements.append(m)
 
