@@ -37,7 +37,7 @@ Adding new messages
        ``dict``
     3. Define a ``from_dict()`` method that takes a ``dict`` and returns a valid
        instance of the new message type
-'''
+'''  # noqa: E501
 import enum
 import json
 
