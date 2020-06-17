@@ -6,18 +6,30 @@
 FlashFlow: A Secure Speed Test for Tor
 ======================================
 
-**Code**:
- - https://gitlab.torproject.org/pastly/flashflow
- - https://gitlab.torproject.org/pastly/stem (branch: *flashflow*)
- - https://gitlab.torproject.org/pastly/flashflow-tor
+Code
+----
 
-**Docs**: (you're reading them)
-`http://jsd33qlp6p2...onion <http://jsd33qlp6p2t3snyw4prmwdh2sukssefbpjy6katca5imn4zz4pepdid.onion>`_
-AKA https://flashflow.pastly.xyz
+- https://gitlab.torproject.org/pastly/flashflow
+- https://gitlab.torproject.org/pastly/stem (branch: *flashflow*)
+- https://gitlab.torproject.org/pastly/flashflow-tor
 
-**Paper**: `FlashFlow: A Secure Speed Test for Tor <https://arxiv.org/pdf/2004.09583.pdf>`_
+Docs
+----
 
-**Tor Proposal**: `#316 <https://gitweb.torproject.org/torspec.git/tree/proposals/316-flashflow.txt>`_
+- **This page**: `http://jsd33qlp6p2t[...].onion
+  <http://jsd33qlp6p2t3snyw4prmwdh2sukssefbpjy6katca5imn4zz4pepdid.onion>`_ AKA
+  https://flashflow.pastly.xyz.
+- **Unit test coverage**: `http://jsd33qlp6p2t[...].onion/coverage
+  <http://jsd33qlp6p2t3snyw4prmwdh2sukssefbpjy6katca5imn4zz4pepdid.onion/coverage>`_
+  AKA https://flashflow.pastly.xyz/coverage.
+
+Literature
+----------
+
+- `FlashFlow: A Secure Speed Test for Tor <https://arxiv.org/pdf/2004.09583.pdf>`_
+- `Tor Proposal #316 <https://gitweb.torproject.org/torspec.git/tree/proposals/316-flashflow.txt>`_
+
+--------------------------------
 
 .. toctree::
    :maxdepth: 2
