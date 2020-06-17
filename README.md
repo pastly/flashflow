@@ -2,7 +2,9 @@
 
 [![Build Status](https://travis-ci.org/pastly/flashflow.svg?branch=master)](https://travis-ci.org/pastly/flashflow)
 
-OwO what's this? Placeholder text? In my README?
+Documentation exists in `docs/` and as docstrings in code. It's rendered with
+Sphinx and deployed "regularly" at <https://flashflow.pastly.xyz>. Or build it
+yourself with `tox -e .[doc]`.
 
 ## Developers
 
