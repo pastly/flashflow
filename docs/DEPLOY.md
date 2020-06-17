@@ -1,9 +1,11 @@
-# Generating keys
+# Deploying FlashFlow
+
+## Generating keys
 
 FlashFlow coordinators and measurers all maintain TLS identify keys.
 `scripts/gen-cert.sh` can be used to help generate them.
 
-## Coordinator
+### Coordinator
 
     $ ./scripts/gen-cert.sh coord
     Generating a RSA private key
@@ -44,7 +46,7 @@ measurer certs. The third measurer's cert file was skipped because the file
 name doesn't end with `.pem`. Measurer 3, were it to try to connect, would not
 be allowed to complete the TLS handshake with us.
 
-## Measurer
+### Measurer
 
 Run the same `gen-cert.sh` script.
 

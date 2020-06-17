@@ -60,13 +60,15 @@ setup(
         ]
     },
     install_requires=[
-        'stem==1.8.0.dev0',
+        'stem @ git+https://gitlab.torproject.org/pastly/stem@flashflow',
+        # 'stem==1.8.0.dev0',
         'transitions==0.8.1',
         # 'requests[socks]',
     ],
     extras_require={
         # vulture: find unused code
-        'dev': ['flake8', 'vulture', 'mypy'],
-        'test': ['tox', 'pytest', 'coverage'],
+        'dev': ['flake8==3.8.1', 'vulture==1.4', 'mypy==0.770'],
+        'doc': ['sphinx==3.0.3', 'recommonmark==0.6.0', 'sphinx-autodoc-typehints==1.10.3'],
+        'test': ['tox==3.15.1', 'pytest==5.4.2', 'coverage==5.1'],
     },
 )

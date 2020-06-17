@@ -1,3 +1,4 @@
+''' Stem helper stuff. '''
 from stem.control import Controller  # type: ignore
 from stem.connection import IncorrectSocketType  # type: ignore
 from stem.process import launch_tor_with_config  # type: ignore
@@ -126,10 +127,17 @@ def _parse_torrc_str(
 def launch(
         tor_bin: str, tor_datadir: str, torrc_extra: str
         ) -> Optional[Controller]:
+    ''' Launch and connect to Tor, returning the
+    :class:`stem.control.Controller` on success, or ``None`` on failure.
+
+    :param tor_bin: How to execute tor. I.e. either "tor" or "./path/to/tor"
+    :param tor_datadir: DataDirectory to use
+    :param torrc_extra: Extra arbitrary lines to add to the torrc we use
+    '''
     ''' Launch and connect to Tor using the given tor binary (or path to tor
     binary) and using the given Tor DataDirectory. Returns an authenticated
     stem Controller object when successful. If any error occurs, this module
-    logs about it and returns from here. '''
+    logs about it and returns ``None``. '''
     opj = os.path.join
     os.makedirs(tor_datadir, mode=0o700, exist_ok=True)
     # Get a copy of the starting torrc without any dynamic options
@@ -166,14 +174,16 @@ def launch(
 
 
 def send_msg(c: Controller, m: TorCtrlMsg) -> ControlMessage:
-    ''' Send a message to Tor on the given Controller. Wait for the response.
-    Return response.  This should only be used for messages for which stem
-    doesn't already provide an interface.
+    ''' Send a message to Tor on the given Controller, wait for the response,
+    and return it.
 
-    Yes this is a thin wrapper (right now...). The reasons for it existing are
-        - to avoid using `Controller.msg()` directly,
-        - only allow ourselves to send specific messages,
-        - make it "impossible" to send malformed messages by only accepting
-        TorCtrlMsg subtypes and using static analyses
+    This should only be used for messages for which stem doesn't already
+    provide an interface.
+    This is a thin wrapper. The reasons for it existing are:
+
+        - To avoid using :meth:`stem.control.BaseController.msg` directly.
+        - Only allow ourselves to send specific messages.
+        - Make it "impossible" to send malformed messages by only accepting
+          :class:`TorCtrlMsg` subtypes and using static analyses
     '''
     return c.msg(str(m))

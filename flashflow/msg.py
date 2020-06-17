@@ -1,24 +1,58 @@
-'''
-This is the collection of messages that FlashFlow entities can send to each
-other.
+''' Messages that FlashFlow coordinators and measurers can send to each other.
+
+Messages serialize to JSON. Each contains a :class:`MsgType` integer, which is
+**the** way the message type is determined.  Parties are trusted to not be
+malicious, so relatively little is done to verify that messages are
+well-formed.
+
+Usage
+=====
+
+To **create** a new message, create it directly with its constructor. E.g.
+:func:`ConnectToRelay`.
+
+To **send** a message, call its :func:`FFMsg.serialize` method and write the
+bytes you get out to the stream.
+
+To **receive** a message, pass the :class:`bytes` to the static method
+:func:`FFMsg.deserialize`
+
+Example::
+
+    # "Send" message to measurer
+    m_send = ConnectToRelay('DEADBEEF', 80, 30)
+    print(m_send.serialize())  # outputs JSON byte string
+    # "Receive" message from coordinator
+    b = b"{'msg_type': -289, 'sent': 16666, 'recv': 15555}"
+    m_recv = FFMsg.deserialize(b)  # Returns BwReport object
+
+Adding new messages
+===================
+
+1. Define its :class:`MsgType` with a random integer
+2. Check for the new variant in :func:`FFMsg.deserialize`
+3. Define the new class, ensuring you
+    1. Set ``msg_type`` to the new :class:`MsgType` variant
+    2. Define a ``_to_dict()`` method that takes ``self`` and returns a
+       ``dict``
+    3. Define a ``from_dict()`` method that takes a ``dict`` and returns a valid
+       instance of the new message type
 '''
 import enum
 import json
 
 
 class MsgType(enum.Enum):
-    ''' Message types. These are used so that the parent FFMsg class can tell
-    which type of Msg subclass it is attempting to deserialize and pass off the
-    data to it to finish deserialization.
+    ''' Message types used so that the parent :class:`FFMsg` class can tell
+    which type of JSON it is looking at and pass deserialization work off to
+    the appropriate subclass.
 
-    While I would normally use enum.auto() for these since I don't want to
+    I would normally use :py:func:`enum.auto` for these since I don't want to
     allow implicit assumptions about each variant's value and their relation to
-    each other. However in the off chance a version X coordinator tries to talk
-    to version Y measurer with different values for the variants, setting
-    static and explicit values helps preserve their ability to communicate.
-
-    To prevent devs from being tempted to think the variants' values imply some
-    sort of relationship or order, set them to random ints.
+    each other. However in the off chance a version ``X`` coordinator tries to
+    talk to version ``Y`` measurer with different values for the variants,
+    setting static and explicit values helps preserve their ability to
+    communicate.
     '''
     CONNECT_TO_RELAY = 357
     CONNECTED_TO_RELAY = 78612
@@ -28,6 +62,11 @@ class MsgType(enum.Enum):
 
 
 class FFMsg:
+    ''' Base class for all messages that FlashFlow coordinators and measurers
+    can send to each other.
+
+    See the module-level documentation for more information.
+    '''
     def serialize(self) -> bytes:
         return json.dumps(self._to_dict()).encode('utf-8')
 
@@ -52,12 +91,13 @@ class FFMsg:
 
 
 class ConnectToRelay(FFMsg):
-    ''' Coordinator --> Measurer message instructing them to connect to the
-    specified relay. This message contains
+    ''' Coordinator to Measurer message instructing them to connect to the
+    specified relay.
 
-    - the fingerprint of the relay the measurer should connect to
-    - the number of circuits they should open with the relay
-    - the duration of the active measurement phase, in seconds
+    :param fp: the fingerprint of the relay to which the measurer should
+        connect
+    :param n_circs: the number of circuits they should open with the relay
+    :param dur: the duration of the active measurement phase, in seconds
     '''
     msg_type = MsgType.CONNECT_TO_RELAY
 
@@ -80,11 +120,11 @@ class ConnectToRelay(FFMsg):
 
 
 class ConnectedToRelay(FFMsg):
-    ''' Measurer --> Coordinator message indicating whether or not they
-    successfully connected to the relay. This message contains
+    ''' Measurer to Coordinator message indicating whether or not they
+    successfully connected to the relay.
 
-    - a bool, indicating success/failure
-    - the original ConnectToRelay message
+    :param success: **True** if successful, else **False**
+    :param orig: the original :class:`ConnectToRelay` message
     '''
     msg_type = MsgType.CONNECTED_TO_RELAY
 
@@ -108,10 +148,10 @@ class ConnectedToRelay(FFMsg):
 
 
 class Failure(FFMsg):
-    ''' Coordinator <--> Measurer message indicating the sending party has
-    experienced some sort of error and the measurement should be halted.
+    ''' Bidirectional message indicating the sending party has experienced some
+    sort of error and the measurement should be halted.
 
-    - a str, containing a human-meaningful description of what happened
+    :param desc: human-meaningful description of what happened
     '''
     msg_type = MsgType.FAILURE
 
@@ -132,7 +172,7 @@ class Failure(FFMsg):
 
 
 class Go(FFMsg):
-    ''' Coordinator --> Measurer message indicating its time to start the
+    ''' Coordinator to Measurer message indicating its time to start the
     measurement '''
     msg_type = MsgType.GO
 
@@ -150,8 +190,12 @@ class Go(FFMsg):
 
 
 class BwReport(FFMsg):
-    ''' Measurer --> Coordinator message containing the number of sent and
-    received bytes with the target relay in the last second '''
+    ''' Measurer to Coordinator message containing the number of sent and
+    received bytes with the target relay in the last second.
+
+    :param sent: number of sent bytes in the last second
+    :param recv: number of received bytes in the last second
+    '''
     msg_type = MsgType.BW_REPORT
 
     def __init__(self, sent: int, recv: int):

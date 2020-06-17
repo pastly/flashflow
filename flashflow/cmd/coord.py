@@ -23,8 +23,10 @@ from transitions import Machine  # type: ignore
 
 
 class MeasrProtocol(asyncio.Protocol):
-    ''' How we communicate with measurers. Not much should be housed here. Hand
-    stuff off to the main state machines to handle received data.
+    ''' How we communicate with measurers.
+
+    Very little should be done here. Parse the bytes then give objects to the
+    main state machines to handle.
     '''
     transport = None
 
@@ -40,6 +42,8 @@ class MeasrProtocol(asyncio.Protocol):
         # TODO: anything else need to be done?
 
     def data_received(self, data: bytes):
+        # XXX: It's possible we receive an incomplete JSON string
+        # https://gitlab.torproject.org/pastly/flashflow/-/issues/10
         log.info('Received %d bytes: %s', len(data), data)
         m = msg.FFMsg.deserialize(data)
         machine.recv_measr_msg(self, m)
@@ -47,46 +51,67 @@ class MeasrProtocol(asyncio.Protocol):
 
 class MStates(enum.Enum):
     ''' States that a specific measurement can be in '''
-    # Starting state. We haven't done anything yet. Nothing happens here.
+    #: Starting state. We haven't done anything yet. Nothing happens here.
     START = enum.auto()
-    # Coordinator (we) are connecting to the relay
+    #: We (the coordinator) are connecting to the relay
     COORD_CONNECTING = enum.auto()
-    # We are sending measurement params to the relay and waiting for them to
-    # accept them
+    #: We are sending measurement params to the relay and waiting for them to
+    #: accept them
     SENDING_PARAMS = enum.auto()
-    # Measurers are connecting to the relay
+    #: Measurers are connecting to the relay
     MEASR_CONNECTING = enum.auto()
-    # Measurement is happening
+    #: Measurement is happening
     MEASUREMENT = enum.auto()
-    # An error happened. We need to inform everyone
+    #: An error happened. We need to inform everyone
     ERROR = enum.auto()
-    # Wrap up time
+    #: Wrap up time
     CLEANUP = enum.auto()
 
 
 class MStateMachine(Machine):
-    ''' We can run many measurements at once. This is the state machine for a
-    specific measurement.
+    ''' The state machine for a specific measurement (we can run many at once).
 
-    The ideal state flow is:
-        1. Coordinator connects to the relay. COORD_CONNECTING
+    The ideal state flow is as follows.
+
+        1. Coordinator connects to the relay.
         2. Wait to hear back from tor if the relay accepted the measurement
-           params. SENDING_PARAMS
-        3. Tell measurers to connect to the relay. MEASR_CONNECTING
+           params.
+        3. Tell measurers to connect to the relay.
         4. Hear back that they all have done so successfully. Start measuring.
-           MEASUREMENT
         5. When the measurement is over, cleanup and exit this state machine.
-           CLEANUP
+
+    :param tor_client: Our tor client's :class:`stem.control.Controller`
+    :param relay_fp: Fingerprint of the relay to measure
+    :param meas_duration: Duration, in seconds, of the measurement
+    :param bg_percent: The percent of background traffic, as a fraction between
+        0 and 1, that the relay should be limiting itself to.
+    :param measurers: The set of measurers we should use for this measurement.
     '''
+    #: Copy of the :class:`stem.control.Controller` with our tor.
     tor_client: Controller
+    #: The set of all measurers (as represented by :class:`MeasrProtocol`)
+    #: involved in this measurement.
     measurers: Set[MeasrProtocol]
+    #: The set of measurers (as represented by :class:`MeasrProtocol`)
+    #: involved in this measurement that have indicated they successfully
+    #: connected to the relay and are ready to start active measurement.
     ready_measurers: Set[MeasrProtocol]
+    #: The fingerprint of the relay to measure.
     relay_fp: str
+    #: Our circuit id with the relay.
     relay_circ: int
+    #: The duration, in seconds, that active measurement should last.
     meas_duration: int
+    #: The percent of background traffic, as a fraction between 0 and 1, that
+    #: the relay should be limiting itself to.
     bg_percent: float
-    # First int is sent, second is received. From that party's perspective.
+    #: Per-second reports from the relay with the number of the bytes of
+    #: background traffic it is carrying. Each tuple is ``(sent_bytes,
+    #: received_bytes)`` where sent/received are from the relay's perspective.
     bg_reports: List[Tuple[int, int]]
+    #: Per-second reports from the measurers with the number of bytes of
+    #: measurement traffic. Each tuple is ``(sent_bytes, received_bytes)``,
+    #: where sent/received are from the measurer's perspective.
     measr_reports: Dict[MeasrProtocol, Tuple[int, int]]
 
     def __init__(
@@ -144,11 +169,12 @@ class MStateMachine(Machine):
         )
 
     def _connect_to_relay(self):
-        ''' Main function for COORD_CONNECTING state. Tell our tor client to
-        build a circuit to the relay. We block a very short time until we hear
-        that the circuit has launched (not built) and save the circuit id for
-        later. This is the "control circuit" with the relay for a FlashFlow
-        measurement. '''
+        ''' Main function for COORD_CONNECTING state.
+
+        Tell our tor client to build a circuit to the relay. We block a very
+        short time until we hear that the circuit has launched (different than
+        built) and save the circuit id for later. This is the "control circuit"
+        with the relay for a FlashFlow measurement. '''
         # Send the command to our tor client to start a measurement with the
         # given relay
         ret = tor_client.send_msg(
@@ -176,8 +202,13 @@ class MStateMachine(Machine):
         # finished building the circuit
 
     def _tell_measr_to_connect(self):
-        ''' Main function for MEASR_CONNECTING state. '''
+        ''' Main function for MEASR_CONNECTING state.
+
+        We've connected to the relay, now tell each measurer to connect to the
+        relay.
+        '''
         # TODO: num circuits as a param
+        # https://gitlab.torproject.org/pastly/flashflow/-/issues/11
         m = msg.ConnectToRelay(self.relay_fp, 10, self.meas_duration)
         for measr in self.measurers:
             measr.transport.write(m.serialize())

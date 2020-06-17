@@ -1,3 +1,27 @@
+''' Module handling the parsing of FlashFlow configuration files.
+
+FlashFlow uses Python's standard :class:`configparser.ConfigParser` with
+:class:`configparser.ExtendedInterpolation` to build a single config object.
+The same object contains the :mod:`logging` configuration suitable for handing
+off to Python via :func:`logging.config.fileConfig`. See :mod:`logging.config`
+for information on the format of the logging config.
+
+Default options are loaded from :const:`DEF_CONF_INI`
+(``flashflow/config.default.ini``), which is then extended with
+:const:`DEF_CONF_LOG_INI` (``flashflow/config.log.default.ini``).
+
+It is good practice to fetch ints, floats, and bools from the config with
+:meth:`configparser.ConfigParser.getint`,
+:meth:`configparser.ConfigParser.getfloat`, and
+:meth:`configparser.ConfigParser.getboolean` respectively. FlashFlow extends
+:class:`ConfigParser` with two additional converters:
+
+    1. For file paths that automatically expands ``~`` and environment
+       variables (*with two '$', not one*). See :meth:`expand_path`.
+    2. For parsing a ``hostname:port`` string into a ``(str, int)``
+       tuple.  Use ``conf.getpath(...)`` and ``conf.getaddr(...)`` for these.
+       See :meth:`expand_addr`.
+'''
 from configparser import ConfigParser, ExtendedInterpolation
 from tempfile import NamedTemporaryFile
 import os
@@ -15,6 +39,12 @@ DEF_CONF_LOG_INI = os.path.join(PKG_DIR, 'config.log.default.ini')
 
 
 def get_config(user_conf_fname: Optional[str]):
+    ''' **THE** function to call in order to parse and receive the
+    configuration that the user wants to use.
+
+    First gather the default options, then apply the config found in the given
+    filename, if any.
+    '''
     conf = _get_default_config()
     conf = _get_default_log_config(conf=conf)
     conf = _get_user_config(user_conf_fname, conf=conf)
@@ -22,6 +52,9 @@ def get_config(user_conf_fname: Optional[str]):
 
 
 def config_logging(conf):
+    ''' Called near the very beginning of execution to finish configuring
+    Python's :mod:`logging`.
+    '''
     ###########################################################################
     # Apply the user's actual desired path for per-second measurement results.
     # It's weird because the logging config system wants a 4-tuple of args ...
@@ -70,25 +103,35 @@ def _extend_config(conf, fname: str):
     return conf
 
 
-def _expand_path(path: str) -> str:
-    ''' Expand path string containing shell variables and '~' into their
-    values. Environment variables MUST have their '$' escaped by another '$'.
-    For example, '$$XDG_RUNTIME_DIR/foo.bar'. '''
+def expand_path(path: str) -> str:
+    ''' Expand path string containing shell variables and ``~`` into their
+    values.
+
+    Environment variables must have their ``$`` escaped by another ``$``.
+    For example, ``$$XDG_RUNTIME_DIR/foo.bar``.
+
+    This function is only public so it gets documented. It is not intended to
+    be used outside of this module.
+    '''
     return os.path.expanduser(os.path.expandvars(path))
 
 
-def _expand_addr(addr: str) -> Optional[Tuple[str, int]]:
-    ''' Parse the given string into a (hostname, port) tuple. Not much effort
-    is put into validation:
+def expand_addr(addr: str) -> Optional[Tuple[str, int]]:
+    ''' Parse the given string into a (hostname, port) tuple.
+
+    Not much effort is put into validation:
         - the port is checked to be a valid integer
         - if the host looks like an ipv6 address with brackets, they are
-        removed
-    and otherwise the values are left as-is.
+          removed
+
+    Otherwise the values are left as-is.
 
     On success, returns (hostname, port) where port is an integer. On error,
     logs about the error and returns None. ConfigParser does **not** see this
     an error case worthy of special treatement, so you need to check if the
     returned value is None yourself.
+
+    ::
 
         '127.0.0.1'        --> None (error: no port)
         ':1234'            --> None (error: no host)
@@ -102,6 +145,9 @@ def _expand_addr(addr: str) -> Optional[Tuple[str, int]]:
     It's not up to this function to decide how to specify "listen on all hosts"
     or "pick a port for me." These things should be documented and decided
     elsewhere.
+
+    This function is only public so it gets documented. It is not intended to
+    be used outside of this module.
     '''
     try:
         a, p = addr.rsplit(':', 1)
@@ -117,6 +163,6 @@ def _empty_config() -> ConfigParser:
     return ConfigParser(
         interpolation=ExtendedInterpolation(),
         converters={
-            'path': _expand_path,
-            'addr': _expand_addr,
+            'path': expand_path,
+            'addr': expand_addr,
         })
