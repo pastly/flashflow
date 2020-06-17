@@ -53,7 +53,7 @@ setup(
     },
     data_files=get_data_files(),
     keywords='tor onion bandwidth measurements scanner relay',
-    python_requires='>=3.6',
+    python_requires='>=3.7.3',
     entry_points={
         'console_scripts': [
             'flashflow = flashflow.flashflow:main',
