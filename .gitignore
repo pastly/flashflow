@@ -7,3 +7,5 @@ __pycache__/
 data-coord/
 data-meas/
 config.ini
+htmlcov/
+.coverage
