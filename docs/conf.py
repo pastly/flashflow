@@ -33,7 +33,6 @@ extensions = [
     'sphinx.ext.autodoc',
     'sphinx.ext.intersphinx',
     'sphinx_autodoc_typehints',
-    'recommonmark',
 ]
 
 # Use this to squash spammy warnings until

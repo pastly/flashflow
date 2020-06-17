@@ -1,11 +1,16 @@
-# Deploying FlashFlow
+Deploying FlashFlow
+===================
 
-## Generating keys
+Generating keys
+---------------
 
 FlashFlow coordinators and measurers all maintain TLS identify keys.
-`scripts/gen-cert.sh` can be used to help generate them.
+``scripts/gen-cert.sh`` can be used to help generate them.
 
-### Coordinator
+Coordinator
+^^^^^^^^^^^
+
+::
 
     $ ./scripts/gen-cert.sh coord
     Generating a RSA private key
@@ -22,16 +27,18 @@ FlashFlow coordinators and measurers all maintain TLS identify keys.
     -----END CERTIFICATE-----
 
 As you can see, both the private key and the certificate are in the same file.
-This is how Python's SSL library like it (devs: they *can* be seperate, but
+This is how Python's SSL library like it (devs: they *can* be separate, but
 this is easier).
 
 Put this file in your key directory. By default your key directory is a
-subdirectory of your data directory. By default it is thus `data-coord/keys/`.
+subdirectory of your data directory. By default it is thus ``data-coord/keys/``.
 
 You need the certificates for all the measurers you trust. When the measurers
 run this script, they should provide you with the bottom half of their output
 file: just the certificate part. You put each measurer's certificate in its own
-file in your keys directory in a file ending with `.pem`.
+file in your keys directory in a file ending with ``.pem``.
+
+::
 
     $ ls data-coord/keys
     coord.pem  # By default this is the file read for our own key/cert.
@@ -43,12 +50,15 @@ file in your keys directory in a file ending with `.pem`.
 
 Running FlashFlow as a coordinator with the above keys directory loads two
 measurer certs. The third measurer's cert file was skipped because the file
-name doesn't end with `.pem`. Measurer 3, were it to try to connect, would not
+name doesn't end with ``.pem``. Measurer 3, were it to try to connect, would not
 be allowed to complete the TLS handshake with us.
 
-### Measurer
+Measurer
+^^^^^^^^
 
-Run the same `gen-cert.sh` script.
+Run the same ``gen-cert.sh`` script.
+
+::
 
     $ ./scripts/gen-cert.sh measurer1
     Generating a RSA private key
