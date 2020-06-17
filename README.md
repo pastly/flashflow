@@ -8,8 +8,8 @@ yourself with `tox -e .[doc]`.
 
 ## Developers
 
-See [HACKING.md](docs/HACKING.md)
+See [HACKING](docs/HACKING.rst)
 
 ## Users
 
-See [DEPLOY.md](docs/DEPLOY.md)
+See [DEPLOY](docs/DEPLOY.rst)
