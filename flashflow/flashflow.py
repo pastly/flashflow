@@ -2,6 +2,7 @@ from argparse import ArgumentParser
 import logging
 from typing import Dict, Any
 import flashflow.cmd.coord
+import flashflow.cmd.ctrl
 import flashflow.cmd.measurer
 from . import __version__
 from .config import get_config, config_logging
@@ -19,6 +20,7 @@ def create_parser():
     #                help='Override the configured flashflow log level')
     sub = p.add_subparsers(dest='cmd')
     flashflow.cmd.coord.gen_parser(sub)
+    flashflow.cmd.ctrl.gen_parser(sub)
     flashflow.cmd.measurer.gen_parser(sub)
     return p
 
@@ -37,6 +39,10 @@ def call_real_main(args, conf) -> None:
     cmds = {
         'coord': {
             'f': flashflow.cmd.coord.main,
+            'a': def_args, 'kw': def_kwargs,
+        },
+        'ctrl': {
+            'f': flashflow.cmd.ctrl.main,
             'a': def_args, 'kw': def_kwargs,
         },
         'measurer': {

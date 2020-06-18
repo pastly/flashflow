@@ -49,6 +49,31 @@ class MeasrProtocol(asyncio.Protocol):
         machine.recv_measr_msg(self, m)
 
 
+class CtrlProtocol(asyncio.Protocol):
+    ''' Development/debugging control communication protocol '''
+    transport: Optional[asyncio.Transport] = None
+
+    def connection_made(self, transport):
+        # TODO: log host:port of controller
+        log.debug('Connection from controller')
+        self.transport = transport
+        # machine.notif_measurer_connected(self)
+
+    def connection_lost(self, exc):
+        log.debug('Lost connection with controller')
+        # machine.notif_measurer_disconnected(self)
+
+    def data_received(self, data: bytes):
+        # log.debug('ctrl: %s', data)
+        assert self.transport is not None
+        success, err_str = machine.notif_ctrl_message(data.decode('utf-8'))
+        if success:
+            self.transport.write(b'OK')
+        else:
+            self.transport.write(err_str.encode('utf-8'))
+        self.transport.close()
+
+
 class MStates(enum.Enum):
     ''' States that a specific measurement can be in '''
     #: Starting state. We haven't done anything yet. Nothing happens here.
@@ -510,7 +535,8 @@ class StateMachine(Machine):
         on them.
     '''
     # conf  # This is set in __init__
-    server: asyncio.base_events.Server
+    meas_server: asyncio.base_events.Server
+    ctrl_server: asyncio.base_events.Server
     tor_client: Controller
     measurers: List[MeasrProtocol]
     measurements: List[MStateMachine]
@@ -557,10 +583,15 @@ class StateMachine(Machine):
 
     def _ensure_listen_socks(self):
         ''' Main function in the ENSURE_LISTEN_SOCKS state. Open listening
-        sockets '''
+        sockets for measurers as well as for a FlashFlow controller '''
         # Get (host, port) from "host:port"
-        addr_port = self.conf.getaddr('coord', 'listen_addr')
-        if addr_port is None:
+        measr_addr_port = self.conf.getaddr('coord', 'listen_addr')
+        ctrl_addr_port = self.conf.getaddr('coord', 'ctrl_addr')
+        if measr_addr_port is None:
+            log.error('Don\'t know what to listen on')
+            self.change_state_fatal_error()
+            return
+        if ctrl_addr_port is None:
             log.error('Don\'t know what to listen on')
             self.change_state_fatal_error()
             return
@@ -586,27 +617,43 @@ class StateMachine(Machine):
         ssl_context.load_verify_locations(measr_cert_fname)
         ssl_context.verify_mode = ssl.CERT_REQUIRED
         # Create the async task of opening this listen socks.
-        task = loop.create_task(loop.create_server(
+        measr_task = loop.create_task(loop.create_server(
             MeasrProtocol,
-            addr_port[0], addr_port[1],
+            measr_addr_port[0], measr_addr_port[1],
             ssl=ssl_context,
+            reuse_address=True,
+        ))
+        ctrl_task = loop.create_task(loop.create_server(
+            CtrlProtocol,
+            ctrl_addr_port[0], ctrl_addr_port[1],
             reuse_address=True,
         ))
 
         # Callback to find out the result of the attempt to open listen sockets
-        def cb(fut):
+        def measr_cb(fut):
             exc = fut.exception()
             if exc:
                 log.error('Unable to open listen socket(s): %s', exc)
                 self.change_state_fatal_error()
                 return
-            self.server = fut.result()
-            for s in self.server.sockets:
+            self.meas_server = fut.result()
+            for s in self.meas_server.sockets:
                 log.info('Listening on %s for measurers', s.getsockname())
             self.change_state_listening()
+
+        def ctrl_cb(fut):
+            exc = fut.exception()
+            if exc:
+                log.error('Unable to open listen socket(s): %s', exc)
+                self.change_state_fatal_error()
+                return
+            self.ctrl_server = fut.result()
+            for s in self.ctrl_server.sockets:
+                log.info('Listening on %s for FF controllers', s.getsockname())
         # Attach the callback so we find out the results. This will happen
         # asynchronously after we return. And we're returning now.
-        task.add_done_callback(cb)
+        measr_task.add_done_callback(measr_cb)
+        ctrl_task.add_done_callback(ctrl_cb)
 
     def _ensure_conn_w_tor(self):
         ''' Main function in the ENSURE_CONN_W_TOR state. Launch a tor client
@@ -633,10 +680,16 @@ class StateMachine(Machine):
         ''' Cleanup all of our state while being very careful to not allow any
         exceptions to bubble up. Use this when in an error state and you want
         to cleanup before starting over or just dying. '''
-        if hasattr(self, 'server') and self.server:
-            log.info('cleanup: closing listening sockets')
+        if hasattr(self, 'meas_server') and self.meas_server:
+            log.info('cleanup: closing listening sockets for measurers')
             try:
-                self.server.close()
+                self.meas_server.close()
+            except Exception as e:
+                log.error('Error closing listening sockets: %s', e)
+        if hasattr(self, 'ctrl_server') and self.ctrl_server:
+            log.info('cleanup: closing listening sockets for controllers')
+            try:
+                self.ctrl_server.close()
             except Exception as e:
                 log.error('Error closing listening sockets: %s', e)
         if hasattr(self, 'tor_client') and self.tor_client:
@@ -723,15 +776,6 @@ class StateMachine(Machine):
         from a measurer '''
         self.measurers.append(measurer)
         log.debug('Now have %d measurers', len(self.measurers))
-        # # start a toy measurement for testing
-        # m = MStateMachine(
-        #     self.tor_client,
-        #     'relay1',
-        #     self.conf.getint('meas_params', 'meas_duration'),
-        #     self.conf.getfloat('meas_params', 'bg_percent'),
-        #     {_ for _ in self.measurers})
-        # m.change_state_starting()
-        # self.measurements.append(m)
 
     def notif_measurer_disconnected(self, measurer: MeasrProtocol):
         ''' Called from MeasrProtocol when a connection with a measurer has
@@ -739,6 +783,30 @@ class StateMachine(Machine):
         self.measurers = [m for m in self.measurers if m != measurer]
         log.debug('Measurer lost. Now have %d', len(self.measurers))
         # TODO: need to do error stuff if they were a part of any measurements
+
+    def notif_ctrl_message(self, msg: str) -> Tuple[bool, str]:
+        ''' Called from CtrlProtocol when a controller has given us a command.
+        Returns (True, '') if the message seems like a good, actionable
+        message.  Otherwise returns False and a human-meaningful string with
+        more information.  '''
+        words = msg.lower().split()
+        if not len(words):
+            return False, 'Empty command?'
+        command = words[0]
+        if command == 'measure':
+            if self.state != States.READY or len(self.measurements):
+                return False, 'Not READY or already measuring'
+            log.debug('told to measure %s', words[1])
+            m = MStateMachine(
+                self.tor_client,
+                words[1],
+                self.conf.getint('meas_params', 'meas_duration'),
+                self.conf.getfloat('meas_params', 'bg_percent'),
+                {_ for _ in self.measurers})
+            m.change_state_starting()
+            self.measurements.append(m)
+            return True, ''
+        return False, 'Unknown ctrl command: ' + msg
 
     def notif_measurement_done(self, meas: MStateMachine, success: bool):
         ''' Called from an individual measurement's state machine to tell us it
