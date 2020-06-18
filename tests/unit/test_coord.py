@@ -7,6 +7,17 @@ class MockMeasrProtocol:
     pass
 
 
+def rand_listen_addr():
+    from random import randint
+    # return '[::1]:' + str(randint(10000, 64000))
+    return 'localhost:' + str(randint(10000, 64000))
+
+
+# def loop():
+#     import asyncio
+#     return asyncio.get_event_loop()
+
+
 class Base(unittest.TestCase):
     ''' Abstract out the some state creation for tests in this file '''
     def setUp(self):
@@ -16,6 +27,8 @@ class Base(unittest.TestCase):
         self.datadir = TemporaryDirectory()
         self.conf = get_config(None)
         self.conf['coord']['datadir'] = self.datadir.name
+        self.conf['coord']['keydir'] = 'tests/data/coord/keys'
+        self.conf['coord']['listen_addr'] = rand_listen_addr()
         self.sm = StateMachine(self.conf)
 
     def tearDown(self):
@@ -80,3 +93,52 @@ class TestMeasrDisconnect(Base):
         assert len(self.sm.measurers) == 1
         self.sm.notif_measurer_disconnected(m_unlisted)
         self.assertEqual(len(self.sm.measurers), 1)
+
+
+class TestEnsureListenSocks(Base):
+    ''' Transition to the state for opening listening sockets. '''
+    @unittest.skip(
+        'Can\'t figure out why contained cb() called twice, the 1st time '
+        'with "address already in use"')
+    def test(self):
+        assert self.sm.state == States.START
+        self.sm.change_state_starting()
+        # While working on this, I modified _ensure_listen_socks to return the
+        # task.
+        # task = self.sm._ensure_listen_socks()
+        # loop().run_until_complete(task)
+        # print(task)
+        # print(self.sm.state)
+        # assert False
+
+    def test_bad_addr_port(self):
+        ''' We're configured to use an invalid "hostname:port" string '''
+        self.conf['coord']['listen_addr'] = 'example.com11111'
+        assert self.sm.state == States.START
+        self.sm.change_state_starting()
+        with self.assertLogs('flashflow.cmd.coord', 'ERROR'):
+            self.sm._ensure_listen_socks()
+        self.assertEqual(self.sm.state, States.FATAL_ERROR)
+
+    def test_no_keydir(self):
+        ''' Our configured keydir doesn't exist, but must in order to load
+        client TLS certs '''
+        # This exists
+        self.conf['coord']['key'] = 'tests/data/coord/keys/coord.pem'
+        # This doesn't
+        self.conf['coord']['keydir'] = '/tmp/directory/does/not/exist'
+        assert self.sm.state == States.START
+        self.sm.change_state_starting()
+        with self.assertLogs('flashflow.cmd.coord', 'ERROR'):
+            self.sm._ensure_listen_socks()
+        self.assertEqual(self.sm.state, States.FATAL_ERROR)
+
+    def test_no_key(self):
+        ''' Our configured keydir doesn't exist, but must in order to load
+        client TLS certs '''
+        self.conf['coord']['key'] = '/tmp/coord/key/does/not/exist'
+        assert self.sm.state == States.START
+        self.sm.change_state_starting()
+        with self.assertLogs('flashflow.cmd.coord', 'ERROR'):
+            self.sm._ensure_listen_socks()
+        self.assertEqual(self.sm.state, States.FATAL_ERROR)
