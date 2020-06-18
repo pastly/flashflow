@@ -1,9 +1,15 @@
 import unittest
+from unittest.mock import MagicMock
 from flashflow.cmd.coord import States
+from flashflow.msg import FFMsg
 
 
 class MockMeasrProtocol:
     ''' Mock coord.MeasrProtocol '''
+    pass
+
+
+class MockTorController(MagicMock):
     pass
 
 
@@ -30,6 +36,7 @@ class Base(unittest.TestCase):
         self.conf['coord']['keydir'] = 'tests/data/coord/keys'
         self.conf['coord']['listen_addr'] = rand_listen_addr()
         self.sm = StateMachine(self.conf)
+        self.sm.tor_client = MockTorController()
 
     def tearDown(self):
         self.datadir.cleanup()
@@ -99,7 +106,9 @@ class TestEnsureListenSocks(Base):
     ''' Transition to the state for opening listening sockets. '''
     @unittest.skip(
         'Can\'t figure out why contained cb() called twice, the 1st time '
-        'with "address already in use"')
+        'with "address already in use". Actually ... it\'s probably because '
+        'transitions calls _ensure_listen_socks itself and we are also '
+        'calling it explicitly.')
     def test(self):
         assert self.sm.state == States.START
         self.sm.change_state_starting()
@@ -142,3 +151,27 @@ class TestEnsureListenSocks(Base):
         with self.assertLogs('flashflow.cmd.coord', 'ERROR'):
             self.sm._ensure_listen_socks()
         self.assertEqual(self.sm.state, States.FATAL_ERROR)
+
+
+class TestRecvMeasrMsg(Base):
+    ''' What happens when we receive a FFMsg from a measurer in various
+    situations.
+
+    The only time we want to handle a FFMsg is when we are READY.
+    '''
+    def test_nonREADY(self):
+        assert self.sm.state == States.START
+        msg = FFMsg()
+        measr = MockMeasrProtocol()
+        for start_state in [
+            States.START,
+            States.ENSURE_LISTEN_SOCKS,
+            States.ENSURE_CONN_W_TOR,
+            # States.READY,  # testing all BUT this state
+            States.NONFATAL_ERROR,
+            States.FATAL_ERROR,
+        ]:
+            self.sm.state = start_state
+            with self.assertLogs('flashflow.cmd.coord', 'ERROR'):
+                self.sm.recv_measr_msg(measr, msg)
+            self.assertEqual(self.sm.state, States.NONFATAL_ERROR)
