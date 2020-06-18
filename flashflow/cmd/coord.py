@@ -723,15 +723,15 @@ class StateMachine(Machine):
         from a measurer '''
         self.measurers.append(measurer)
         log.debug('Now have %d measurers', len(self.measurers))
-        # start a toy measurement for testing
-        m = MStateMachine(
-            self.tor_client,
-            'relay1',
-            self.conf.getint('meas_params', 'meas_duration'),
-            self.conf.getfloat('meas_params', 'bg_percent'),
-            {_ for _ in self.measurers})
-        m.change_state_starting()
-        self.measurements.append(m)
+        # # start a toy measurement for testing
+        # m = MStateMachine(
+        #     self.tor_client,
+        #     'relay1',
+        #     self.conf.getint('meas_params', 'meas_duration'),
+        #     self.conf.getfloat('meas_params', 'bg_percent'),
+        #     {_ for _ in self.measurers})
+        # m.change_state_starting()
+        # self.measurements.append(m)
 
     def notif_measurer_disconnected(self, measurer: MeasrProtocol):
         ''' Called from MeasrProtocol when a connection with a measurer has

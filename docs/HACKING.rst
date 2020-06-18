@@ -1,6 +1,57 @@
 Hacking on FlashFlow
 ====================
 
+Unit testing
+------------
+
+Bare ``assert`` versus ``self.assert*``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Use bare ``asserts`` in unit tests for things that you expect to be true but
+are **not** about the behavior being tested. Use ``self.assert*`` for things
+that **are** being tested.
+
+For example, you have some test that verifies initial state of your state
+machine is ``START``. This test creates a state machine and uses
+``self.assertEqual(state_machine.state, START)`` to test this behavior.
+
+In other unit tests where you want to make certain and/or document for the
+reader that the current state is ``START`` when you are adding a widget to the
+state machine's list of widgets, use a bare ``assert``.
+
+::
+
+   class TestWidgetStateMachine(unittest.TestCase):
+      def test_add_widget(self):
+         # Make explicit we are in state START. Not behavior being tested.
+         assert state_machine.state == START
+         w = Widget()
+         state_machine.add_widget(w)
+         # Verify the widget was added. Behavior being tested.
+         self.assertEqual(len(state_machine.widgets), 1)
+
+Here is another example showing proper use of ``assert`` versus
+``self.assert*``. The test is not about correctly adding a widget, but removing
+one.
+
+::
+
+   class TestWidgetStateMachine(unittest.TestCase):
+      def test_remove_not_exist(self):
+         # Create two widgets and add one to the list
+         w_listed = Widget()
+         w_unlisted = Widget()
+         # Make explicit there is no widgets listed. Not being tested.
+         assert not state_machine.widgets
+         # Add one
+         state_machine.add_widget(w_listed)
+         # Make explicit there is indeed a widget listed now. Not being tested.
+         assert len(state_machine.widgets) == 1
+         # Here is the core of the test: try removing a non-existant widget
+         state_machine.remove_widget(w_unlisted)
+         # Verify the listed widget still exists. Behavior being tested.
+         self.assertEqual(len(state_machine.widgets), 1)
+
 Adding a new command
 --------------------
 
