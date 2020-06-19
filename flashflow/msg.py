@@ -94,6 +94,7 @@ class ConnectToRelay(FFMsg):
     ''' Coordinator to Measurer message instructing them to connect to the
     specified relay.
 
+    :param meas_id: the ID to assign to this measurement
     :param fp: the fingerprint of the relay to which the measurer should
         connect
     :param n_circs: the number of circuits they should open with the relay
@@ -101,7 +102,8 @@ class ConnectToRelay(FFMsg):
     '''
     msg_type = MsgType.CONNECT_TO_RELAY
 
-    def __init__(self, fp: str, n_circs: int, dur: int):
+    def __init__(self, meas_id: int, fp: str, n_circs: int, dur: int):
+        self.meas_id = meas_id
         self.fp = fp
         self.n_circs = n_circs
         self.dur = dur
@@ -109,6 +111,7 @@ class ConnectToRelay(FFMsg):
     def _to_dict(self) -> dict:
         return {
             'msg_type': self.msg_type.value,
+            'meas_id': self.meas_id,
             'fp': self.fp,
             'n_circs': self.n_circs,
             'dur': self.dur
@@ -116,7 +119,7 @@ class ConnectToRelay(FFMsg):
 
     @staticmethod
     def from_dict(d: dict) -> 'ConnectToRelay':
-        return ConnectToRelay(d['fp'], d['n_circs'], d['dur'])
+        return ConnectToRelay(d['meas_id'], d['fp'], d['n_circs'], d['dur'])
 
 
 class ConnectedToRelay(FFMsg):

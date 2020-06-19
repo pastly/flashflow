@@ -4,6 +4,7 @@ import enum
 import glob
 import logging
 import os
+import random
 import ssl
 import time
 from functools import partial
@@ -20,6 +21,11 @@ from stem import CircStatus
 from stem.control import Controller, EventType  # type: ignore
 from stem.response.events import CircuitEvent, FFMeasEvent  # type: ignore
 from transitions import Machine  # type: ignore
+
+
+def next_meas_id() -> int:
+    ''' Generate a new measurement ID '''
+    return random.randint(0, 2**32-1)
 
 
 class MeasrProtocol(asyncio.Protocol):
@@ -107,6 +113,7 @@ class MStateMachine(Machine):
 
     :param tor_client: Our tor client's :class:`stem.control.Controller`
     :param relay_fp: Fingerprint of the relay to measure
+    :param meas_id: measurement ID
     :param meas_duration: Duration, in seconds, of the measurement
     :param bg_percent: The percent of background traffic, as a fraction between
         0 and 1, that the relay should be limiting itself to.
@@ -125,6 +132,8 @@ class MStateMachine(Machine):
     relay_fp: str
     #: Our circuit id with the relay. Filled in once we actually have one
     relay_circ: Optional[int]
+    #: The measurement ID
+    meas_id: int
     #: The duration, in seconds, that active measurement should last.
     meas_duration: int
     #: The percent of background traffic, as a fraction between 0 and 1, that
@@ -141,10 +150,11 @@ class MStateMachine(Machine):
 
     def __init__(
             self, tor_client: Controller, relay_fp: str,
-            meas_duration: int, bg_percent: float,
+            meas_id: int, meas_duration: int, bg_percent: float,
             measurers: Set[MeasrProtocol]):
         self.tor_client = tor_client
         self.relay_fp = relay_fp
+        self.meas_id = meas_id
         self.meas_duration = meas_duration
         self.bg_percent = bg_percent
         self.measurers = measurers
@@ -222,7 +232,9 @@ class MStateMachine(Machine):
                 'Did not expect body of message to be: %s' % (content,))
             return
         self.relay_circ = int(parts[1])
-        log.info('Circ %d is our circuit with the relay', self.relay_circ)
+        log.info(
+            '(M#%d) Circ %d is our circuit with the relay',
+            self.meas_id, self.relay_circ)
         # That's all for now. We stay in this state until Tor tells us it has
         # finished building the circuit
 
@@ -234,37 +246,45 @@ class MStateMachine(Machine):
         '''
         # TODO: num circuits as a param
         # https://gitlab.torproject.org/pastly/flashflow/-/issues/11
-        m = msg.ConnectToRelay(self.relay_fp, 10, self.meas_duration)
+        m = msg.ConnectToRelay(
+            self.meas_id, self.relay_fp, 10, self.meas_duration)
         for measr in self.measurers:
             measr.transport.write(m.serialize())
 
     def _cleanup(self):
         ''' Main function for CLEANUP state. '''
         if self.relay_circ:
-            log.info('cleanup: closing relay circ %s', self.relay_circ)
+            log.info(
+                '(M#%d) cleanup: closing relay circ %s',
+                self.meas_id, self.relay_circ)
             try:
                 self.tor_client.close_circuit(self.relay_circ)
             except stem.InvalidArguments:
                 # probably unknown circ
                 pass
             except Exception as e:
-                log.warn('Error closing relay circ: %s %s', type(e), e)
+                log.warn(
+                    '(M#%d) Error closing relay circ: %s %s',
+                    self.meas_id, type(e), e)
             finally:
                 self.relay_circ = None
 
     def _tell_all_failure(self, f: msg.Failure):
         # TODO: tell tor client too
-        log.error(f.desc)
+        log.error('(M#%d) %s', self.meas_id, f.desc)
         for measr in self.measurers:
             if measr.transport:
                 try:
                     measr.transport.write(f.serialize())
                 except Exception as e:
-                    log.warn('Error sending Failure msg to measr: %s', e)
+                    log.warn(
+                        '(M#%d) Error sending Failure msg to measr: %s',
+                        self.meas_id, e)
                     continue
             else:
                 log.error(
-                    '%s has no transport, cannot tell it about failure', measr)
+                    '(M#%d) %s has no transport, cannot tell it about failure',
+                    self.meas_id, measr)
 
     def _tell_all_go(self):
         # Tell our tor client
@@ -332,8 +352,8 @@ class MStateMachine(Machine):
             max_bg = frac * meas / (1 - frac)
             if bg_untrust > max_bg:
                 log.warn(
-                    'Capping %s\'s reported bg to %d as %d is too much',
-                    self.relay_fp, max_bg, bg_untrust)
+                    '(M#%d) Capping %s\'s reported bg to %d as %d is too much',
+                    self.meas_id, self.relay_fp, max_bg, bg_untrust)
             bg_report_trust.append(min(bg_untrust, max_bg))
             results_logger.write_bg(self.relay_fp, now, bg_untrust, max_bg)
         # Calculate each second's aggregate bytes
@@ -343,7 +363,9 @@ class MStateMachine(Machine):
         # Calculate the median over all seconds
         res = median(aggs)
         # Log as Mbit/s
-        log.info('%s was measured at %.2f Mbit/s', self.relay_fp, res*8/1e6)
+        log.info(
+            '(M#%d) %s was measured at %.2f Mbit/s',
+            self.meas_id, self.relay_fp, res*8/1e6)
         results_logger.write_end(self.relay_fp, now)
 
     # ########################################################################
@@ -387,7 +409,8 @@ class MStateMachine(Machine):
         self.ready_measurers.add(measr)
         if len(self.ready_measurers) == len(self.measurers):
             log.debug(
-                'All %d measurers have connected', len(self.ready_measurers))
+                '(M#%d) All %d measurers have connected',
+                self.meas_id, len(self.ready_measurers))
             self.change_state_measr_connected()
             return
 
@@ -400,8 +423,8 @@ class MStateMachine(Machine):
         assert measr in self.measr_reports
         self.measr_reports[measr].append((message.sent, message.recv))
         log.debug(
-            'BwReport #%d says %d/%d sent/recv measr bytes',
-            len(self.measr_reports[measr]),
+            '(M#%d) BwReport #%d says %d/%d sent/recv measr bytes',
+            self.meas_id, len(self.measr_reports[measr]),
             message.sent, message.recv)
         if self._have_all_reports():
             self.change_state_measurement_done(True)
@@ -423,8 +446,9 @@ class MStateMachine(Machine):
         # Make super sure this event is for us
         if int(event.id) != self.relay_circ:
             log.warn(
-                'Ignoring CIRC event not for us. %d vs %d. This should ' +
-                'have been caught earlier.', self.relay_circ, int(event.id))
+                '(M#%d) Ignoring CIRC event not for us. %d vs %d. This should '
+                'have been caught earlier.',
+                self.meas_id, self.relay_circ, int(event.id))
             return
         # It's for us, and the circuit has just been built. If we're in the
         # right state for this, continue on to the next state. Otherwise this
@@ -446,17 +470,22 @@ class MStateMachine(Machine):
         # It's for us, and the circuit has been closed. TODO this might be fine
         # in some case?
         elif event.status == CircStatus.CLOSED:
-            log.warn('circ %d with relay closed', self.relay_circ)
+            log.warn(
+                '(M#%d) circ %d with relay closed',
+                self.meas_id, self.relay_circ)
             self.change_state_error(
                 'Circ %d closed unexpectedly' % (int(event.id),))
             return
         elif event.status == CircStatus.FAILED:
-            log.error('circ %d entered failed state: %s', int(event.id), event)
+            log.error(
+                '(M#%d) circ %d entered failed state: %s',
+                self.meas_id, int(event.id), event)
             self.change_state_error(
                 'Cird %d failed' % (int(event.id),))
             return
         # It's for us, but don't know how to handle it yet
-        log.warn('Not handling CIRC event for us: %s', event)
+        log.warn(
+            '(M#%d) Not handling CIRC event for us: %s', self.meas_id, event)
 
     def notif_ffmeas_event(self, event: FFMeasEvent):
         ''' Receive a FF_MEAS event from our tor client
@@ -469,15 +498,15 @@ class MStateMachine(Machine):
         # done already.
         if event.circ_id != self.relay_circ:
             log.warn(
-                'Ignoring FF_MEAS event for different measurement ' +
+                '(M#%d) Ignoring FF_MEAS event for different measurement '
                 '%d vs %d. This should have been caught earlier',
-                self.relay_circ, event.circ_id)
+                self.meas_id, self.relay_circ, event.circ_id)
             return
         # It's for us, and the meas params cell has been sent to the relay.
         if event.ffmeas_type == 'PARAMS_SENT':
             log.debug(
-                'Measurement params have been sent to the relay on circ %s',
-                self.relay_circ)
+                '(M#%d) Measurement params have been sent to the relay on '
+                'circ %s', self.meas_id, self.relay_circ)
             # and that's it. We expect another notification when the relay has
             # accepted or rejected the parameters
             return
@@ -492,13 +521,15 @@ class MStateMachine(Machine):
         elif event.ffmeas_type == 'BW_REPORT':
             self.bg_reports.append((event.sent, event.recv))
             log.debug(
-                'BW_REPORT #%d says %d/%d sent/recv background bytes',
-                len(self.bg_reports), event.sent, event.recv)
+                '(M#%d) BW_REPORT #%d says %d/%d sent/recv background bytes',
+                self.meas_id, len(self.bg_reports), event.sent, event.recv)
             if self._have_all_reports():
                 self.change_state_measurement_done(True)
             return
         # It's for us, but don't know how to handle it yet
-        log.warn('Not handling FF_MEAS event that is for us: %s', event)
+        log.warn(
+            '(M#%d) Not handling FF_MEAS event that is for us: %s',
+            self.meas_id, event)
 
 
 class States(enum.Enum):
@@ -797,9 +828,11 @@ class StateMachine(Machine):
             if self.state != States.READY or len(self.measurements):
                 return False, 'Not READY or already measuring'
             log.debug('told to measure %s', words[1])
+            meas_id = next_meas_id()
             m = MStateMachine(
                 self.tor_client,
                 words[1],
+                meas_id,
                 self.conf.getint('meas_params', 'meas_duration'),
                 self.conf.getfloat('meas_params', 'bg_percent'),
                 {_ for _ in self.measurers})

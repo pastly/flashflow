@@ -45,17 +45,19 @@ class MeasrStartMeas(TorCtrlMsg):
     Later, when everything is setup and ready to go, it is used to tell the tor
     client to actually start sending measurement traffic with the relay.
 
+    :param meas_id: Measurement ID
     :param nick_fp: Nickname or fingerprint of the relay to measure. Always use
         fingerprint in practice.
     :param n_circs: Number of circuits (and connections) to open with the
         relay.
     :param dur: The duration, in seconds, of the measurement.
     '''
-    def __init__(self, nick_fp: str, n_circs: int, dur: int):
+    def __init__(self, meas_id: int, nick_fp: str, n_circs: int, dur: int):
+        self.meas_id = meas_id
         self.nick_fp = nick_fp
         self.n_circs = n_circs
         self.dur = dur
 
     def __str__(self) -> str:
-        return 'MEASR_START_MEAS %s %d %d' %\
-            (self.nick_fp, self.n_circs, self.dur)
+        return 'MEASR_START_MEAS %d %s %d %d' %\
+            (self.meas_id, self.nick_fp, self.n_circs, self.dur)

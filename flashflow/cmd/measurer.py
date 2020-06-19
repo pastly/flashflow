@@ -287,7 +287,8 @@ class StateMachine(Machine):
         ''' Main function for the CREATE_CONN_W_TOR state '''
         ret = tor_client.send_msg(
             self.tor_client,
-            MeasrStartMeas(message.fp, message.n_circs, message.dur))
+            MeasrStartMeas(
+                message.meas_id, message.fp, message.n_circs, message.dur))
         # Make sure the circuit launches went well. Note they aren't built yet.
         # It's just that tor found nothing obviously wrong with trying to build
         # these circuits.
@@ -297,8 +298,8 @@ class StateMachine(Machine):
                 (message.n_circs, message.fp, ret))
             return
         # We expect to see "250 FF_MEAS 0 LAUNCHED CIRCS=1,2,3,4,5", where the
-        # 0 is just a placeholder and the actual list of launched circuits is
-        # CIRCS the comma-separated list
+        # 0 is the measurement ID we told the tor client, and the actual list
+        # of launched circuits is CIRCS the comma-separated list
         code, _, content = ret.content()[0]
         parts = content.split()
         if code != '250':
@@ -307,7 +308,9 @@ class StateMachine(Machine):
                 'Malformed response from tor: %s' % (ret,))
             return
         if len(parts) != 4 or \
-                not content.startswith('FF_MEAS 0 LAUNCHED CIRCS='):
+                not parts[0] == 'FF_MEAS' or \
+                not parts[2] == 'LAUNCHED' or \
+                not parts[3].startswith('CIRCS='):
             log.error('Did not expect body of message to be: %s', content)
             self.change_state_nonfatal_error(
                 'Malformed response from tor: %s' % (ret,))
@@ -329,7 +332,8 @@ class StateMachine(Machine):
     def _start_measuring(self):
         ''' Main function for the MEASUREMENT state '''
         m = MeasrStartMeas(
-            self.connect_msg.fp, len(self.built_circs), self.connect_msg.dur)
+            self.connect_msg.meas_id, self.connect_msg.fp,
+            len(self.built_circs), self.connect_msg.dur)
         ret = tor_client.send_msg(self.tor_client, m)
         if not ret.is_ok():
             self.change_state_nonfatal_error(
