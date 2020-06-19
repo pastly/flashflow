@@ -570,11 +570,11 @@ class StateMachine(Machine):
     ctrl_server: asyncio.base_events.Server
     tor_client: Controller
     measurers: List[MeasrProtocol]
-    measurements: List[MStateMachine]
+    measurements: Dict[int, MStateMachine]
 
     def __init__(self, conf):
         self.conf = conf
-        self.measurements = []
+        self.measurements = {}
         self.measurers = []
         super().__init__(
             model=self,
@@ -779,15 +779,21 @@ class StateMachine(Machine):
 
     def _recv_msg_connected_to_relay(
             self, measr: MeasrProtocol, message: msg.ConnectedToRelay):
-        # TODO: be able to handle multiple measurements at once
-        for m in [m for m in self.measurements if measr in m.measurers]:
-            m.recv_msg_connected_to_relay(measr, message)
+        meas_id = message.orig.meas_id
+        if meas_id not in self.measurements:
+            log.error(
+                '%s told us about meas_id %d, which we don\'t know about. '
+                'Dropping message.', measr, meas_id)
+            return
+        self.measurements[meas_id].recv_msg_connected_to_relay(measr, message)
 
     def _recv_msg_measr_bw_report(
             self, measr: MeasrProtocol, message: msg.BwReport):
-        # TODO: be able to handle multiple measurements at once
-        for m in [m for m in self.measurements if measr in m.measurers]:
-            m.recv_msg_measr_bw_report(measr, message)
+        # XXX Drop until we can handle multiple measurements at once
+        # https://gitlab.torproject.org/pastly/flashflow/-/issues/15
+        pass
+        # for m in [m for m in self.measurements if measr in m.measurers]:
+        #     m.recv_msg_measr_bw_report(measr, message)
 
     # ########################################################################
     # MISC EVENTS. These are called from other parts of the coord code.
@@ -825,6 +831,7 @@ class StateMachine(Machine):
             return False, 'Empty command?'
         command = words[0]
         if command == 'measure':
+            # TODO: pastly/flashflow#16 (able to start another while 1 going)
             if self.state != States.READY or len(self.measurements):
                 return False, 'Not READY or already measuring'
             log.debug('told to measure %s', words[1])
@@ -837,7 +844,7 @@ class StateMachine(Machine):
                 self.conf.getfloat('meas_params', 'bg_percent'),
                 {_ for _ in self.measurers})
             m.change_state_starting()
-            self.measurements.append(m)
+            self.measurements[meas_id] = m
             return True, ''
         return False, 'Unknown ctrl command: ' + msg
 
@@ -847,7 +854,12 @@ class StateMachine(Machine):
         log.debug(
             'Learned of a %ssuccessful measurement',
             'non-' if not success else '')
-        self.measurements = [m for m in self.measurements if m != meas]
+        if meas.meas_id not in self.measurements:
+            log.error(
+                'MStateMachine told us meas_id %d is done, but don\'t know '
+                'about it.', meas.meas_id)
+            return
+        del self.measurements[meas.meas_id]
         log.debug('Now have %d saved measurements', len(self.measurements))
 
     def notif_circ_event(self, event: CircuitEvent):
@@ -859,8 +871,9 @@ class StateMachine(Machine):
         loop (in a threadsafe manner) to handle this event.
         '''
         circ_id = int(event.id)
-        for m in [m for m in self.measurements if m.relay_circ == circ_id]:
-            loop.call_soon_threadsafe(partial(m.notif_circ_event, event))
+        for meas in [m for m in self.measurements.values()
+                     if m.relay_circ == circ_id]:
+            loop.call_soon_threadsafe(partial(meas.notif_circ_event, event))
 
     def notif_ffmeas_event(self, event: FFMeasEvent):
         ''' Called from stem to tell us about FF_MEAS events. Pass them off to
@@ -870,8 +883,9 @@ class StateMachine(Machine):
         loop (in a threadsafe manner) to handle this event.
         '''
         circ_id = event.circ_id
-        for m in [m for m in self.measurements if m.relay_circ == circ_id]:
-            loop.call_soon_threadsafe(partial(m.notif_ffmeas_event, event))
+        for meas in [m for m in self.measurements.values()
+                     if m.relay_circ == circ_id]:
+            loop.call_soon_threadsafe(partial(meas.notif_ffmeas_event, event))
 
 
 log = logging.getLogger(__name__)
