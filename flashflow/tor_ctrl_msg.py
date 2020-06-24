@@ -24,16 +24,19 @@ class CoordStartMeas(TorCtrlMsg):
     ''' Coordinator to its client, instructing it to start the measurement
     processs with the given relay.
 
+    :param meas_id: Measurement ID
     :param nick_fp: Nickname or fingerprint of the relay to measure. Always use
         fingerprint in practice.
     :param dur: The duration, in seconds, of the measurement.
     '''
-    def __init__(self, nick_fp: str, dur: int):
+    def __init__(self, meas_id: int, nick_fp: str, dur: int):
+        self.meas_id = meas_id
         self.nick_fp = nick_fp
         self.dur = dur
 
     def __str__(self) -> str:
-        return 'COORD_START_MEAS %s %d' % (self.nick_fp, self.dur)
+        return 'COORD_START_MEAS %d %s %d' % (
+            self.meas_id, self.nick_fp, self.dur)
 
 
 class MeasrStartMeas(TorCtrlMsg):

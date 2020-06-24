@@ -173,5 +173,5 @@ class TestRecvMeasrMsg(Base):
         ]:
             self.sm.state = start_state
             with self.assertLogs('flashflow.cmd.coord', 'ERROR'):
-                self.sm.recv_measr_msg(measr, msg)
+                self.sm.notif_measr_msg(measr, msg)
             self.assertEqual(self.sm.state, States.NONFATAL_ERROR)

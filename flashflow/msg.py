@@ -154,64 +154,75 @@ class Failure(FFMsg):
     ''' Bidirectional message indicating the sending party has experienced some
     sort of error and the measurement should be halted.
 
+    :param meas_id: the ID of the measurement to which this applies
     :param desc: human-meaningful description of what happened
     '''
     msg_type = MsgType.FAILURE
 
-    def __init__(self, desc: str):
+    def __init__(self, meas_id: int, desc: str):
+        self.meas_id = meas_id
         self.desc = desc
 
     def _to_dict(self) -> dict:
         return {
             'msg_type': self.msg_type.value,
+            'meas_id': self.meas_id,
             'desc': self.desc,
         }
 
     @staticmethod
     def from_dict(d: dict) -> 'Failure':
         return Failure(
+            d['meas_id'],
             d['desc'],
         )
 
 
 class Go(FFMsg):
     ''' Coordinator to Measurer message indicating its time to start the
-    measurement '''
+    measurement
+
+    :param meas_id: the ID of the measurement to which this applies
+    '''
     msg_type = MsgType.GO
 
-    def __init__(self):
-        pass
+    def __init__(self, meas_id: int):
+        self.meas_id = meas_id
 
     def _to_dict(self) -> dict:
         return {
             'msg_type': self.msg_type.value,
+            'meas_id': self.meas_id
         }
 
     @staticmethod
     def from_dict(d: dict) -> 'Go':
-        return Go()
+        return Go(d['meas_id'])
 
 
 class BwReport(FFMsg):
     ''' Measurer to Coordinator message containing the number of sent and
     received bytes with the target relay in the last second.
 
+    :param meas_id: the ID of the measurement to which this applies
     :param sent: number of sent bytes in the last second
     :param recv: number of received bytes in the last second
     '''
     msg_type = MsgType.BW_REPORT
 
-    def __init__(self, sent: int, recv: int):
+    def __init__(self, meas_id: int, sent: int, recv: int):
+        self.meas_id = meas_id
         self.sent = sent
         self.recv = recv
 
     def _to_dict(self) -> dict:
         return {
             'msg_type': self.msg_type.value,
+            'meas_id': self.meas_id,
             'sent': self.sent,
             'recv': self.recv,
         }
 
     @staticmethod
     def from_dict(d: dict) -> 'BwReport':
-        return BwReport(d['sent'], d['recv'])
+        return BwReport(d['meas_id'], d['sent'], d['recv'])

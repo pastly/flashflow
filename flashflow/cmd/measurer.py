@@ -442,7 +442,7 @@ class StateMachine(Machine):
             log.debug(
                 'Forwarding report of %d/%d sent/recv meas bytes',
                 event.sent, event.recv)
-            report = msg.BwReport(event.sent, event.recv)
+            report = msg.BwReport(event.meas_id, event.sent, event.recv)
             self.coord_trans.write(report.serialize())
             return
         elif event.ffmeas_type == 'END':
