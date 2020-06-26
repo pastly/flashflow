@@ -40,6 +40,7 @@ Adding new messages
 '''  # noqa: E501
 import enum
 import json
+from typing import NoReturn, Optional
 
 
 class MsgType(enum.Enum):
@@ -61,6 +62,55 @@ class MsgType(enum.Enum):
     BW_REPORT = -289
 
 
+def _assert_never(x: NoReturn) -> NoReturn:
+    ''' Helper that always throws an assert.
+
+    Used to help mypy ensure that all variants of an enum are covered.
+    https://github.com/python/mypy/issues/6366#issuecomment-560369716
+    '''
+    assert False, "Unhandled type: {}".format(type(x).__name__)
+
+
+class FailCode(enum.Enum):
+    ''' :class:`Failure` codes.
+
+    Those prefixed with ``M_`` can only originate
+    at a measurer. Those prefixed with ``C_`` can only originate at a
+    coordinator. All others can originate from anywhere. '''
+    #: A Tor client was unable to launch the required circuit(s) with the relay
+    LAUNCH_CIRCS = enum.auto()
+    #: A Tor client sent its controller a response it couldn't understand
+    MALFORMED_TOR_RESP = enum.auto()
+    #: Measurer cannot start a new measurement with the given ID because it
+    #: already has one with the same ID
+    M_DUPE_MEAS_ID = enum.auto()
+    #: Measurer given a command containing an unknown measurement ID
+    M_UNKNOWN_MEAS_ID = enum.auto()
+    #: Measurer's Tor client didn't accept command to start active measurement
+    M_START_ACTIVE_MEAS = enum.auto()
+    #: Coordinator's Tor client didn't accept command to start active
+    #: measurement
+    C_START_ACTIVE_MEAS = enum.auto()
+
+    def __str__(self) -> str:
+        if self is FailCode.LAUNCH_CIRCS:
+            return 'Unable to launch circuit(s)'
+        elif self is FailCode.MALFORMED_TOR_RESP:
+            return 'Malformed response from Tor client'
+        elif self is FailCode.M_DUPE_MEAS_ID:
+            return 'Measurer already has measurement with given ID'
+        elif self is FailCode.M_UNKNOWN_MEAS_ID:
+            return 'Measurer does not have measurement with given ID'
+        elif self is FailCode.M_START_ACTIVE_MEAS:
+            return 'Measurer unable to tell Tor client to start active ' \
+                'measurement'
+        elif self is FailCode.C_START_ACTIVE_MEAS:
+            return 'Coordinator unable to tell Tor client to start active ' \
+                'measurement'
+        else:
+            _assert_never(self)
+
+
 class FFMsg:
     ''' Base class for all messages that FlashFlow coordinators and measurers
     can send to each other.
@@ -77,17 +127,18 @@ class FFMsg:
     def deserialize(b: bytes) -> 'FFMsg':
         j = json.loads(b.decode('utf-8'))
         msg_type = MsgType(j['msg_type'])
-        if msg_type == MsgType.CONNECT_TO_RELAY:
+        if msg_type is MsgType.CONNECT_TO_RELAY:
             return ConnectToRelay.from_dict(j)
-        elif msg_type == MsgType.CONNECTED_TO_RELAY:
+        elif msg_type is MsgType.CONNECTED_TO_RELAY:
             return ConnectedToRelay.from_dict(j)
-        elif msg_type == MsgType.FAILURE:
+        elif msg_type is MsgType.FAILURE:
             return Failure.from_dict(j)
-        elif msg_type == MsgType.GO:
+        elif msg_type is MsgType.GO:
             return Go.from_dict(j)
-        elif msg_type == MsgType.BW_REPORT:
+        elif msg_type is MsgType.BW_REPORT:
             return BwReport.from_dict(j)
-        assert None, 'Unknown/unimplemented MsgType %d' % (j['msg_type'],)
+        else:
+            _assert_never(msg_type)
 
 
 class ConnectToRelay(FFMsg):
@@ -154,28 +205,43 @@ class Failure(FFMsg):
     ''' Bidirectional message indicating the sending party has experienced some
     sort of error and the measurement should be halted.
 
-    :param meas_id: the ID of the measurement to which this applies
-    :param desc: human-meaningful description of what happened
+    :param meas_id: the ID of the measurement to which this applies, or
+        ``None`` if the failure is not specific to a measurement
+    :param code: the :class:`FailCode`
+    :param info: optional, any arbitrary extra information already stringified
     '''
     msg_type = MsgType.FAILURE
 
-    def __init__(self, meas_id: int, desc: str):
+    def __init__(
+            self, code: FailCode, meas_id: Optional[int],
+            extra_info: Optional[str] = None):
+        self.code = code
         self.meas_id = meas_id
-        self.desc = desc
+        self.extra_info = extra_info
 
     def _to_dict(self) -> dict:
         return {
             'msg_type': self.msg_type.value,
+            'code': self.code,
             'meas_id': self.meas_id,
-            'desc': self.desc,
+            'extra_info': self.extra_info,
         }
 
     @staticmethod
     def from_dict(d: dict) -> 'Failure':
         return Failure(
+            d['code'],
             d['meas_id'],
-            d['desc'],
+            extra_info=d['extra_info'],
         )
+
+    def __str__(self) -> str:
+        prefix = str(self.code)
+        if self.meas_id is not None:
+            prefix += ' (meas %d)' % (self.meas_id,)
+        if self.extra_info is not None:
+            prefix += ': %s' % (str(self.extra_info),)
+        return prefix
 
 
 class Go(FFMsg):
@@ -205,13 +271,16 @@ class BwReport(FFMsg):
     received bytes with the target relay in the last second.
 
     :param meas_id: the ID of the measurement to which this applies
+    :param ts: the seconds since the unix epoch for which this
+        :class:`BwReport` applies
     :param sent: number of sent bytes in the last second
     :param recv: number of received bytes in the last second
     '''
     msg_type = MsgType.BW_REPORT
 
-    def __init__(self, meas_id: int, sent: int, recv: int):
+    def __init__(self, meas_id: int, ts: float, sent: int, recv: int):
         self.meas_id = meas_id
+        self.ts = ts
         self.sent = sent
         self.recv = recv
 
@@ -219,10 +288,11 @@ class BwReport(FFMsg):
         return {
             'msg_type': self.msg_type.value,
             'meas_id': self.meas_id,
+            'ts': self.ts,
             'sent': self.sent,
             'recv': self.recv,
         }
 
     @staticmethod
     def from_dict(d: dict) -> 'BwReport':
-        return BwReport(d['meas_id'], d['sent'], d['recv'])
+        return BwReport(d['meas_id'], d['ts'], d['sent'], d['recv'])

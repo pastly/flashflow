@@ -5,12 +5,13 @@ import asyncio
 import enum
 import logging
 import ssl
+import time
 import os
-from stem import CircStatus, InvalidArguments  # type: ignore
+from stem import CircStatus  # type: ignore
 from stem.control import Controller, EventType  # type: ignore
 from stem.response.events import CircuitEvent, FFMeasEvent  # type: ignore
 from transitions import Machine  # type: ignore
-from typing import Tuple, Union, Set
+from typing import Tuple, Union, Set, Dict
 from .. import tor_client
 from .. import msg
 from ..tor_ctrl_msg import MeasrStartMeas
@@ -36,30 +37,73 @@ class CoordProtocol(asyncio.Protocol):
         bytes until the entire message has arrived.  '''
         log.info('Received %d bytes: %s', len(data), data)
         m = msg.FFMsg.deserialize(data)
-        machine.recv_coord_msg(m)
+        machine.notif_coord_msg(m)
+
+
+class Measurement:
+    ''' State related to a single measurement. '''
+    #: keep a copy of :class:`flashflow.msg.ConnectToRelay` command so we can
+    #: send it back to the coord when we're ready to go (or have failed)
+    connect_msg: msg.ConnectToRelay
+    #: Our circuit ids with the relay. Filled in once we know what they are
+    #: (they're launched) but not yet bullt
+    circs: Set[int]
+    #: Our built circuit ids with the relay. Filled in as we learn of launched
+    #: circuits becoming built.
+    ready_circs: Set[int]
+    #: Our circuit ids that we've been told have CLOSED or FAILED at any point
+    bad_circs: Set[int]
+
+    def __init__(self, connect_msg: msg.ConnectToRelay):
+        self.connect_msg = connect_msg
+        self.circs = set()
+        self.ready_circs = set()
+        self.bad_circs = set()
+
+    @property
+    def meas_id(self) -> int:
+        ''' The measurement ID '''
+        return self.connect_msg.meas_id
+
+    @property
+    def relay_fp(self) -> str:
+        ''' The fingerprint of the relay to measure '''
+        return self.connect_msg.fp
+
+    @property
+    def meas_duration(self) -> int:
+        ''' The duration, in seconds, that active measurement should last. '''
+        return self.connect_msg.dur
+
+    @property
+    def waiting_circs(self) -> Set[int]:
+        ''' Circs that we have LAUNCHED but have not yet added to ready_circs
+        because we haven't seen BUILT yet.
+
+        Note that as far as this function is concerned, there's no such thing
+        as a circuit becoming un-BUILT. This functiion doesn't know anything
+        about circuits closing. Other code needs to manipulate circs and
+        ready_circs as it deems fit.
+        '''
+        return self.circs - self.ready_circs
 
 
 class States(enum.Enum):
     ''' States that we, as a FlashFlow measurer, can be in. '''
-    # State we start in. Only ever in this state when first launching
+    #: State in which we are created and to which we return when there's a
+    #: non-fatal error
     START = enum.auto()
-    # First "real" state. Launch a tor client and connect to it
+    #: First "real" state. Launch a tor client and connect to it.
     ENSURE_CONN_W_TOR = enum.auto()
-    # Next real state. Connect to the coordinator
+    #: Second real state. Connect to the coordinator.
     ENSURE_CONN_W_COORD = enum.auto()
-    # We're idle and ready to be told what to do
+    #: Normal state. We're doing measurements or waiting to be told to do them.
+    #: We are usually here.
     READY = enum.auto()
-    # Got command from coordinator to connect to a relay. Doing it right now
-    CREATE_CONN_W_RELAY = enum.auto()
-    # We're connected to the relay and ready to go. Just waiting for the start
-    # command from the coordinator
-    WAITING_TO_START = enum.auto()
-    # We've been told go. It's time to start measuring
-    MEASUREMENT = enum.auto()
-    # There was some sort of error that calls for cleaning everything up and
-    # essentially relaunching, but we shouldn't outright die.
+    #: There was some sort of error that calls for cleaning everything up and
+    #: essentially relaunching, but we shouldn't outright die.
     NONFATAL_ERROR = enum.auto()
-    # There is a serious error that isn't recoverable. Just cleanup and die.
+    #: There is a serious error that isn't recoverable. Just cleanup and die.
     FATAL_ERROR = enum.auto()
 
 
@@ -89,18 +133,11 @@ class StateMachine(Machine):
     # how we communicate with the coord
     coord_trans: asyncio.WriteTransport
     coord_proto: CoordProtocol
-    # keep track of which circs we've launched, and which of the launched circs
-    # have been built so far
-    launched_circs: Set[int]
-    built_circs: Set[int]
-    # keep a copy of ConnectToRelay command so we can send it back to the coord
-    # when we're ready to go (or have failed)
-    connect_msg: msg.ConnectToRelay
+    measurements: Dict[int, Measurement]
 
     def __init__(self, conf):
         self.conf = conf
-        self.launched_circs = set()
-        self.built_circs = set()
+        self.measurements = {}
         super().__init__(
             model=self,
             states=States,
@@ -118,26 +155,6 @@ class StateMachine(Machine):
                 {
                     'trigger': 'change_state_connected_to_coord',
                     'source': States.ENSURE_CONN_W_COORD,
-                    'dest': States.READY,
-                },
-                {
-                    'trigger': 'change_state_recv_cmd_connect',
-                    'source': States.READY,
-                    'dest': States.CREATE_CONN_W_RELAY,
-                },
-                {
-                    'trigger': 'change_state_connected_to_relay',
-                    'source': States.CREATE_CONN_W_RELAY,
-                    'dest': States.WAITING_TO_START,
-                },
-                {
-                    'trigger': 'change_state_told_go',
-                    'source': States.WAITING_TO_START,
-                    'dest': States.MEASUREMENT,
-                },
-                {
-                    'trigger': 'change_state_finished',
-                    'source': States.MEASUREMENT,
                     'dest': States.READY,
                 },
                 {
@@ -239,26 +256,6 @@ class StateMachine(Machine):
         # eventually be called with the connection results. Nothing left to do
         # for now.
 
-    def _single_meas_cleanup(self):
-        ''' Cleanup all state associated with a specific measurement. Do not
-        disconnect from anybody. Use this when a measurement has ended
-        successfully. '''
-        self.launched_circs = set()
-        for circ_id in self.built_circs:
-            try:
-                self.tor_client.close_circuit(circ_id)
-            except InvalidArguments:
-                # We'll get this if the circuit has already been closed. It's
-                # fine. It could have been the tor client closing the circuit
-                # itself.
-                pass
-            except Exception as e:
-                log.warn(
-                    'Exception trying to close circ %d: %s %s', circ_id,
-                    type(e), e)
-        self.built_circs = set()
-        self.connect_msg = None
-
     def _complete_cleanup(self):
         ''' Cleanup all of our state while being very careful to not allow any
         exceptions to bubble up. Use this when in an error state and you want
@@ -278,84 +275,22 @@ class StateMachine(Machine):
         if hasattr(self, 'coord_proto') and self.coord_proto:
             # nothing to do
             pass
+        if hasattr(self, 'measurements') and self.measurements:
+            log.info(
+                'cleanup: forgetting about %d measurements',
+                len(self.measurements))
+            self.measurements = {}
 
     def _die(self):
         ''' End execution of the program. '''
         loop.stop()
-
-    def _create_conn_w_relay(self, message: msg.ConnectToRelay):
-        ''' Main function for the CREATE_CONN_W_TOR state '''
-        ret = tor_client.send_msg(
-            self.tor_client,
-            MeasrStartMeas(
-                message.meas_id, message.fp, message.n_circs, message.dur))
-        # Make sure the circuit launches went well. Note they aren't built yet.
-        # It's just that tor found nothing obviously wrong with trying to build
-        # these circuits.
-        if not ret.is_ok():
-            self.change_state_nonfatal_error(
-                'Failed to start %d circuits to %s: %s' %
-                (message.n_circs, message.fp, ret))
-            return
-        # We expect to see "250 FF_MEAS 0 LAUNCHED CIRCS=1,2,3,4,5", where the
-        # 0 is the measurement ID we told the tor client, and the actual list
-        # of launched circuits is CIRCS the comma-separated list
-        code, _, content = ret.content()[0]
-        parts = content.split()
-        if code != '250':
-            log.error('Got non-success code %s: %s', code, content)
-            self.change_state_nonfatal_error(
-                'Malformed response from tor: %s' % (ret,))
-            return
-        if len(parts) != 4 or \
-                not parts[0] == 'FF_MEAS' or \
-                not parts[2] == 'LAUNCHED' or \
-                not parts[3].startswith('CIRCS='):
-            log.error('Did not expect body of message to be: %s', content)
-            self.change_state_nonfatal_error(
-                'Malformed response from tor: %s' % (ret,))
-            return
-        for circ_id_str in parts[3].split('=')[1].split(','):
-            self.launched_circs.add(int(circ_id_str))
-        log.info(
-            'Launched %d circuits with the relay: %s',
-            len(self.launched_circs), self.launched_circs)
-        self.connect_msg = message
-        # That's all for now. We stay in this state until Tor tells us it has
-        # finished building all circuits
-
-    def _tell_coord_ready_to_start(self, success: bool):
-        ''' Main function for the WAITING_TO_START state '''
-        m = msg.ConnectedToRelay(success, self.connect_msg)
-        self.coord_trans.write(m.serialize())
-
-    def _start_measuring(self):
-        ''' Main function for the MEASUREMENT state '''
-        m = MeasrStartMeas(
-            self.connect_msg.meas_id, self.connect_msg.fp,
-            len(self.built_circs), self.connect_msg.dur)
-        ret = tor_client.send_msg(self.tor_client, m)
-        if not ret.is_ok():
-            self.change_state_nonfatal_error(
-                'Unable to tell tor to start active measurement: %s', ret)
-            return
-
-    def _tell_all_failure(self, f: msg.Failure):
-        # TODO: tell tor client too
-        log.error(f.desc)
-        try:
-            self.coord_trans.write(f.serialize())
-        except Exception as e:
-            log.error('Tried sending Failure to coord, but: %s', e)
-            pass
-        return
 
     # ########################################################################
     # STATE CHANGE EVENTS. These are called when entering the specified state.
     # ########################################################################
 
     def on_enter_READY(self):
-        loop.call_soon(self._single_meas_cleanup)
+        pass
 
     def on_enter_ENSURE_CONN_W_TOR(self):
         loop.call_soon(self._ensure_conn_w_tor)
@@ -364,7 +299,7 @@ class StateMachine(Machine):
         loop.call_soon(partial(self._ensure_conn_w_coord, 0.5))
 
     def on_enter_NONFATAL_ERROR(self, err_msg: str):
-        loop.call_soon(self._tell_all_failure, msg.Failure(err_msg))
+        log.error('nonfatal error: %s', err_msg)
         loop.call_soon(self._complete_cleanup)
         loop.call_soon(self.change_state_starting)
 
@@ -373,49 +308,106 @@ class StateMachine(Machine):
         self._complete_cleanup()
         self._die()
 
-    def on_enter_CREATE_CONN_W_RELAY(self, message: msg.ConnectToRelay):
-        loop.call_soon(partial(self._create_conn_w_relay, message))
-
-    def on_enter_WAITING_TO_START(self, success: bool):
-        loop.call_soon(partial(self._tell_coord_ready_to_start, success))
-
-    def on_enter_MEASUREMENT(self):
-        loop.call_soon(self._start_measuring)
-
     # ########################################################################
     # MESSAGES FROM COORD. These are called when the coordinator tells us
     # something.
     # ########################################################################
 
-    def recv_coord_msg(self, message: msg.FFMsg):
+    def notif_coord_msg(self, message: msg.FFMsg):
         msg_type = type(message)
-        state = self.state
+        if self.state != States.READY:
+            log.warn(
+                'Coord sent us message but we are not ready. Dropping. %s',
+                message)
+            return
         # The asserts below are for shutting up mypy
-        if msg_type == msg.ConnectToRelay and state == States.READY:
+        if msg_type == msg.ConnectToRelay:
             assert isinstance(message, msg.ConnectToRelay)
-            self._recv_msg_connect_to_relay(message)
+            return self._notif_coord_msg_ConnectToRelay(message)
         elif msg_type == msg.Failure:
             assert isinstance(message, msg.Failure)
-            self._recv_msg_failure(message)
+            return self._notif_coord_msg_Failure(message)
         elif msg_type == msg.Go:
             assert isinstance(message, msg.Go)
-            self._recv_msg_go(message)
-        else:
-            self.change_state_nonfatal_error(
-                'Unexpected %s message received in state %s' %
-                (msg_type, state))
+            return self._notif_coord_msg_Go(message)
+        log.warn(
+            'Unexpected/unhandled %s message. Dropping. %s',
+            msg_type, message)
 
-    def _recv_msg_connect_to_relay(self, message: msg.ConnectToRelay):
+    def _notif_coord_msg_ConnectToRelay(self, message: msg.ConnectToRelay):
+        # caller should have verified and logged about this already
         assert self.state == States.READY
-        self.change_state_recv_cmd_connect(message)
+        meas_id = message.meas_id
+        if meas_id in self.measurements:
+            fail_msg = msg.Failure(msg.FailCode.M_DUPE_MEAS_ID, meas_id)
+            log.error(fail_msg)
+            self.coord_trans.write(fail_msg.serialize())
+            return
+        meas = Measurement(message)
+        ret = tor_client.send_msg(
+            self.tor_client,
+            MeasrStartMeas(
+                meas.meas_id, meas.relay_fp, message.n_circs,
+                meas.meas_duration))
+        # Make sure the circuit launches went well. Note they aren't built yet.
+        # It's just that tor found nothing obviously wrong with trying to build
+        # these circuits.
+        if not ret.is_ok():
+            fail_msg = msg.Failure(
+                msg.FailCode.LAUNCH_CIRCS, meas_id,
+                extra_info=str(ret))
+            log.error(fail_msg)
+            self.coord_trans.write(fail_msg.serialize())
+            return
+        # We expect to see "250 FF_MEAS 0 LAUNCHED CIRCS=1,2,3,4,5", where the
+        # 0 is the measurement ID we told the tor client, and the actual list
+        # of launched circuits is CIRCS the comma-separated list
+        code, _, content = ret.content()[0]
+        # Already checked this above with ret.is_ok()
+        assert code == '250'
+        parts = content.split()
+        if len(parts) != 4 or \
+                not parts[0] == 'FF_MEAS' or \
+                not parts[2] == 'LAUNCHED' or \
+                not parts[3].startswith('CIRCS='):
+            fail_msg = msg.Failure(
+                msg.FailCode.MALFORMED_TOR_RESP, meas_id,
+                extra_info=str(ret))
+            log.error(fail_msg)
+            self.coord_trans.write(fail_msg.serialize())
+            return
+        meas.circs.update({
+            int(circ_id_str) for circ_id_str in
+            parts[3].split('=')[1].split(',')
+        })
+        log.info(
+            'Launched %d circuits with relay %s: %s', len(meas.circs),
+            meas.relay_fp, meas.circs)
+        self.measurements[meas_id] = meas
+        # That's all for now. We stay in this state until Tor tells us it has
+        # finished building all circuits
 
-    def _recv_msg_failure(self, message: msg.Failure):
-        self.change_state_nonfatal_error(
-            'Coord-induced failure: ' + message.desc)
-        self._die()
-
-    def _recv_msg_go(self, message: msg.Go):
-        self.change_state_told_go()
+    def _notif_coord_msg_Go(self, go_msg: msg.Go):
+        # caller should have verified and logged about this already
+        assert self.state == States.READY
+        meas_id = go_msg.meas_id
+        if meas_id not in self.measurements:
+            fail_msg = msg.Failure(msg.FailCode.M_UNKNOWN_MEAS_ID, meas_id)
+            log.error(fail_msg)
+            self.coord_trans.write(fail_msg.serialize())
+            # TODO: cleanup Measurement
+            return
+        meas = self.measurements[meas_id]
+        start_msg = MeasrStartMeas(
+            meas.meas_id, meas.relay_fp, len(meas.ready_circs),
+            meas.meas_duration)
+        ret = tor_client.send_msg(self.tor_client, start_msg)
+        if not ret.is_ok():
+            fail_msg = msg.Failure(msg.FailCode.M_START_ACTIVE_MEAS, meas_id)
+            log.error(fail_msg)
+            self.coord_trans.write(fail_msg.serialize())
+            # TODO: cleanup Measurement
+            return
 
     # ########################################################################
     # MISC EVENTS. These are called from other parts of the measr code.
@@ -442,18 +434,22 @@ class StateMachine(Machine):
             log.debug(
                 'Forwarding report of %d/%d sent/recv meas bytes',
                 event.sent, event.recv)
-            report = msg.BwReport(event.meas_id, event.sent, event.recv)
+            report = msg.BwReport(
+                event.meas_id, time.time(), event.sent, event.recv)
             self.coord_trans.write(report.serialize())
             return
         elif event.ffmeas_type == 'END':
-            if event.success:
-                self.change_state_finished()
-            else:
-                self.change_state_nonfatal_error(
-                    'Got non-successful END message from tor client')
+            log.info(
+                'Tor client tells us meas %d finished %ssuccessfully%s',
+                event.meas_id, '' if event.success else 'un',
+                '. Cleaning up.' if event.meas_id in self.measurements else
+                ', but we don\'t know about it. Dropping.')
+            if event.meas_id not in self.measurements:
+                return
+            del self.measurements[event.meas_id]
             return
-        self.change_state_nonfatal_error(
-            'Unexpected FF_MEAS event type %s' % (event.ffmeas_type,))
+        log.warn(
+            'Unexpected FF_MEAS event type %s. Dropping.', event.ffmeas_type)
         return
 
     def notif_circ_event(self, event: CircuitEvent):
@@ -473,69 +469,80 @@ class StateMachine(Machine):
         (without a leading underscore) that tells the loop to call us.
         '''
         circ_id = int(event.id)
-        # We don't care about anything if we're just idle waiting
-        if self.state == States.READY:
+        # We don't care about anything unless we're in the main state where we
+        # do measurements
+        if self.state != States.READY:
             return
         # Make sure it's a circuit we care about
-        if circ_id not in self.launched_circs:
+        all_circs: Set[int] = set.union(
+            # in case there's no measurements, add empty set to avoid errors
+            set(),
+            *[meas.circs for meas in self.measurements.values()])
+        waiting_circs: Set[int] = set.union(
+            # in case there's no measurements, add empty set to avoid errors
+            set(),
+            *[meas.waiting_circs for meas in self.measurements.values()])
+        if circ_id not in all_circs:
             # log.warn(
-            #     'Ignoring CIRC event not for us. %d not in our list of ' +
-            #     'launched circs', circ_id)
+            #     'Ignoring CIRC event not for us. %d not in any '
+            #     'measurement\'s set of all circuits',
+            #     circ_id)
             return
-        # It's for us, and the circuit has just been built. It we're in the
-        # right state for this, continue on to the next state. Otherwise this
-        # was unexpected and should error out.
+        # Act based on the type of CIRC event
         if event.status == CircStatus.BUILT:
-            if self.state == States.CREATE_CONN_W_RELAY:
-                assert circ_id in self.launched_circs
-                self.built_circs.add(circ_id)
+            if circ_id not in waiting_circs:
+                log.warn(
+                    'CIRC BUILT event for circ %d we do care about but that '
+                    'isn\'t waiting. Shouldn\'t be possible. %s. Ignoring.',
+                    circ_id, event)
+                return
+            # Tell all interested Measurements (should just be one, but do all
+            # that claim to care about this circuit, just in case) that the
+            # circuit is built
+            for meas in self.measurements.values():
+                if circ_id not in meas.circs:
+                    continue
+                meas.ready_circs.add(circ_id)
                 log.debug(
-                    'Added circ %d to set of built circs. Now have %d/%d',
-                    circ_id, len(self.built_circs), len(self.launched_circs))
-                if len(self.built_circs) == len(self.launched_circs):
-                    log.info('Bult all circuits')
-                    self.change_state_connected_to_relay(True)
-            else:
-                self.change_state_nonfatal_error(
-                    'Found out circ %d is done building, but that '
-                    'shouldn\'t happen in state %s' %
-                    (circ_id, self.state))
+                    'Circ %d added to meas %d\'s built circs. Now '
+                    'have %d/%d', circ_id, meas.meas_id,
+                    len(meas.ready_circs), len(meas.circs))
+                # If all are built, then tell coord this measurement is ready
+                if len(meas.ready_circs) < len(meas.circs):
+                    continue
+                log.info('Meas %d built all circs', meas.meas_id)
+                self.coord_trans.write(msg.ConnectedToRelay(
+                    True, meas.connect_msg).serialize())
             return
-        # It's for us, and the circuit is still getting built. Don't care.
-        # Ignore.
         elif event.status in [CircStatus.LAUNCHED, CircStatus.EXTENDED]:
             # ignore these
             return
-        # It's for us, and the circuit has been closed. TODO this might be fine
-        # in some case?
-        elif event.status == CircStatus.CLOSED:
-            log.warn('circ %d with relay closed', circ_id)
-            self.change_state_nonfatal_error(
-                'Circ %d closed unexpectedly' % (circ_id,))
-            return
-        elif event.status == CircStatus.FAILED:
-            log.error('circ %d entered failed state: %s', circ_id, event)
-            self.change_state_nonfatal_error(
-                'Cird %d failed' % (circ_id,))
+        elif event.status in [CircStatus.CLOSED, CircStatus.FAILED]:
+            # Tell all interested Measurements (should just be one, but do all
+            # that claim to care about this circuit, just in case) that the
+            # circuit has closed or failed
+            for meas in self.measurements.values():
+                if circ_id not in meas.circs:
+                    continue
+                meas.bad_circs.add(circ_id)
+                log.info(
+                    'Meas %d\'s circ %d is now closed/failed: %s',
+                    meas.meas_id, circ_id, event)
             return
         # It's for us, but don't know how to handle it yet
         log.warn('Not handling CIRC event for us: %s', event)
 
 
 class CoordConnRes(enum.Enum):
-    ''' Part of the return value of _try_connect_to_coord(...).
-
-    SUCCESS: We successfully connected to the coord, shook our TLS hands, and
-    all is well.
-
-    RETRY_ERROR: We were not successful, but whatever happened may be temporary
-    and it's logical to try connecting again in the future.
-
-    FATAL_ERROR: We were not successful, and trying again in the future is
-    extremely likely to not be successful. You should give up.
-    '''
+    ''' Part of the return value of :meth:`_try_connect_to_coord`.  '''
+    #: We successfully connected to the coord, shook our TLS hands, and all is
+    #: well.
     SUCCESS = enum.auto()
+    #: We were not successful, but whatever happened may be temporary and it's
+    #: logical to try connecting again in the future.
     RETRY_ERROR = enum.auto()
+    #: We were not successful, and trying again in the future is extremely
+    #: unlikely to be successful. We should give up.
     FATAL_ERROR = enum.auto()
 
 
