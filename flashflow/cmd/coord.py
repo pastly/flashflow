@@ -527,14 +527,7 @@ class StateMachine(Machine):
                 meas_id)
             return
         meas = self.measurements[meas_id]
-        if message.success:
-            meas.ready_measurers.add(measr)
-        else:
-            # pastly/flashflow#19
-            log.error(
-                'Measurer was unable to connect to relay. This is a failure '
-                'that we should handle, but are just dropping for now.')
-            return
+        meas.ready_measurers.add(measr)
         ready_measr = meas.ready_measurers
         all_measr = meas.measurers
         log.debug(

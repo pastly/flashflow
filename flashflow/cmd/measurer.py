@@ -512,7 +512,7 @@ class StateMachine(Machine):
                     continue
                 log.info('Meas %d built all circs', meas.meas_id)
                 self.coord_trans.write(msg.ConnectedToRelay(
-                    True, meas.connect_msg).serialize())
+                    meas.connect_msg).serialize())
             return
         elif event.status in [CircStatus.LAUNCHED, CircStatus.EXTENDED]:
             # ignore these

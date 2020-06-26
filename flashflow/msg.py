@@ -174,31 +174,26 @@ class ConnectToRelay(FFMsg):
 
 
 class ConnectedToRelay(FFMsg):
-    ''' Measurer to Coordinator message indicating whether or not they
-    successfully connected to the relay.
+    ''' Measurer to Coordinator message indicating the have
+    successfully connected to the relay. Non-success is signed with a
+    :class:`Failure` message
 
-    :param success: **True** if successful, else **False**
     :param orig: the original :class:`ConnectToRelay` message
     '''
     msg_type = MsgType.CONNECTED_TO_RELAY
 
-    def __init__(self, success: bool, orig: ConnectToRelay):
-        self.success = success
+    def __init__(self, orig: ConnectToRelay):
         self.orig = orig
 
     def _to_dict(self) -> dict:
         return {
             'msg_type': self.msg_type.value,
-            'success': self.success,
             'orig': self.orig._to_dict(),
         }
 
     @staticmethod
     def from_dict(d: dict) -> 'ConnectedToRelay':
-        return ConnectedToRelay(
-            d['success'],
-            ConnectToRelay.from_dict(d['orig']),
-        )
+        return ConnectedToRelay(ConnectToRelay.from_dict(d['orig']))
 
 
 class Failure(FFMsg):
