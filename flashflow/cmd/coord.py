@@ -694,8 +694,8 @@ class StateMachine(Machine):
         command = words[0]
         if command == 'measure':
             # TODO: pastly/flashflow#16 (able to start another while 1 going)
-            if self.state != States.READY or len(self.measurements):
-                return False, 'Not READY or already measuring'
+            if self.state != States.READY:
+                return False, 'Not READY'
             log.debug('told to measure %s', words[1])
             meas_id = next_meas_id()
             relay_fp = words[1]
