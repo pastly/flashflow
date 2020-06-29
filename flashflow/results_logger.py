@@ -1,6 +1,9 @@
 ''' Helper functions for writing per-second measurement results to a file that
 might rotate.
 
+**Note: The information here is only partially true until pastly/flashflow#4 is
+implemented and this message is removed.**
+
 Results are "logged" via :mod:`logging` at level ``INFO``. It is important that
 the user does not edit the way these messages are logged.
 If the user would like to rotate the output file, e.g. with `logrotate
@@ -36,32 +39,34 @@ BEGIN Line
 
 ::
 
-    <fp> <time> BEGIN
+    <fp> <meas_id> <time> BEGIN
 
 Where:
 
 - ``fp``: the fingerprint of the relay this BEGIN message is for.
+- ``meas_id``: the measurement ID for this measurement
 - ``time``: the integer unix timestamp at which active measurement began.
 
 Example::
 
-    B0430D21D6609459D141078C0D7758B5CA753B6F 1591979504 BEGIN
+    B0430D21D6609459D141078C0D7758B5CA753B6F 58234 1591979504 BEGIN
 
 END line
 --------
 
 ::
 
-    <fp> <time> END
+    <fp> <meas_id> <time> END
 
 Where:
 
 - ``fp``: the fingerprint of the relay this END message is for.
+- ``meas_id``: the measurement ID for this measurement
 - ``time``: the integer unix timestamp at which active measurement ended.
 
 Example::
 
-    B0430D21D6609459D141078C0D7758B5CA753B6F 1591979534 END
+    B0430D21D6609459D141078C0D7758B5CA753B6F 58234 1591979534 END
 
 
 Results line
@@ -69,11 +74,12 @@ Results line
 
 ::
 
-    <fp> <time> <is_bg> GIVEN=<given> TRUSTED=<trusted>
+    <fp> <meas_id> <time> <is_bg> GIVEN=<given> TRUSTED=<trusted>
 
 Where:
 
 - ``fp``: the fingerprint of the relay.
+- ``meas_id``: the measurement ID for this measurement
 - ``time``: the integer unix timestamp at which this result was received.
 - ``is_bg``: 'BG' if this result is a report from the relay on the number of
   background bytes it saw in the last second, or 'MEASR' if this is a result
@@ -94,11 +100,11 @@ trusted)`` as the trusted number of background bytes this second.
 Example::
 
     # bg report from relay, use GIVEN b/c less than TRUSTED
-    B0430D21D6609459D141078C0D7758B5CA753B6F 1591979083 BG GIVEN=744904 TRUSTED=1659029
+    B0430D21D6609459D141078C0D7758B5CA753B6F 58234 1591979083 BG GIVEN=744904 TRUSTED=1659029
     # bg report from relay, use TRUSTED b/c less than GIVEN
-    B0430D21D6609459D141078C0D7758B5CA753B6F 1591979042 BG GIVEN=671858 TRUSTED=50960
+    B0430D21D6609459D141078C0D7758B5CA753B6F 58234 1591979042 BG GIVEN=671858 TRUSTED=50960
     # result from measurer, always trusted
-    B0430D21D6609459D141078C0D7758B5CA753B6F 1591979083 MEASR GIVEN=5059082 TRUSTED=5059082
+    B0430D21D6609459D141078C0D7758B5CA753B6F 58234 1591979083 MEASR GIVEN=5059082 TRUSTED=5059082
 '''  # noqa: E501
 import logging
 

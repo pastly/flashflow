@@ -609,6 +609,10 @@ class StateMachine(Machine):
         # That's all for now. We stay in this state until Tor tells us it has
         # finished building the circuit
 
+    def _generate_v3bw(self):
+        ''' Generate a v3bw file using our latest results for each relay. '''
+        pass
+
     # ########################################################################
     # STATE CHANGE EVENTS. These are called when entering the specified state.
     # ########################################################################
@@ -686,7 +690,6 @@ class StateMachine(Machine):
             return False, 'Empty command?'
         command = words[0]
         if command == 'measure':
-            # TODO: pastly/flashflow#16 (able to start another while 1 going)
             if self.state != States.READY:
                 return False, 'Not READY'
             log.debug('told to measure %s', words[1])
@@ -700,6 +703,9 @@ class StateMachine(Machine):
                 self.conf.getfloat('meas_params', 'bg_percent'))
             self.measurements[meas_id] = meas
             loop.call_soon(partial(self._connect_to_relay, meas))
+            return True, ''
+        elif command == 'v3bw':
+            self._generate_v3bw()
             return True, ''
         return False, 'Unknown ctrl command: ' + msg
 
