@@ -35,36 +35,17 @@ TORRC_BASE: Dict[str, Union[str, List]] = {
 }
 
 
-def _connect_to_socket(loc: str):
+def _connect(loc: str):
+    ''' Connect to a Tor client via its ControlSocket at *loc*
+
+    Returns None if unable to connect for any reason. Tor must not require
+    password authentication; i.e. it requires cookie authentication or no
+    authentication.
+    '''
     try:
-        return Controller.from_socket_file(path=loc)
+        c = Controller.from_socket_file(path=loc)
     except (IncorrectSocketType, SocketError) as e:
         log.error('Error connecting to Tor control socket %s: %s', loc, e)
-        return None
-
-
-def _connect_to_port(port: int):
-    try:
-        return Controller.from_port(port=port)
-    except (IncorrectSocketType, SocketError) as e:
-        log.error('Error connecting to Tor control port %d: %s', port, e)
-        return None
-
-
-def _connect(loc: str):
-    ''' Connect to a Tor control port or control socket a the given location.
-    If the given location looks like an integer, treat it as a port number and
-    (assumes localhost). If it doesn't look like an integer, treat it as path
-    to a socket. Returns None if unable to connect for any reason. Tor must not
-    require password authentication (i.e. cookie authentication or no
-    authentication). '''
-    try:
-        port = int(loc)
-    except ValueError:
-        c = _connect_to_socket(loc)
-    else:
-        c = _connect_to_port(port)
-    if c is None:
         return None
     try:
         c.authenticate()
