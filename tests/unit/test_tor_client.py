@@ -1,4 +1,3 @@
-import unittest
 from flashflow import tor_client
 
 
