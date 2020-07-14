@@ -24,29 +24,29 @@ class TestMeasLineBad(unittest.TestCase):
         assert MeasLine.parse(s) is None
 
     def test_bad_meas_id(self):
-        s = '%s bad_meas_id 1 BEGIN' % (FP,)
+        s = 'bad_meas_id 1 BEGIN %s' % (FP,)
         assert MeasLine.parse(s) is None
 
     def test_bad_ts(self):
-        s = '%s %d bad_ts BEGIN' % (FP, MEAS_ID)
+        s = '%d bad_ts BEGIN %s' % (MEAS_ID, FP)
         assert MeasLine.parse(s) is None
 
-    def test_bad_forth_word(self):
-        s = '%s %d %d NOT_A_REAL_WORD' % (FP, MEAS_ID, TS)
+    def test_bad_third_word(self):
+        s = '%d %d NOT_A_REAL_WORD %s' % (MEAS_ID, TS, FP)
         assert MeasLine.parse(s) is None
 
     def test_too_few_bg(self):
-        s = '%s %d %d BG %d' % (FP, MEAS_ID, TS, 420)
+        s = '%d %d BG %d' % (MEAS_ID, TS, 420)
         assert MeasLine.parse(s) is None
 
     def test_too_many_measr(self):
-        s = '%s %d %d MEASR %d %d' % (FP, MEAS_ID, TS, 420, 69)
+        s = '%d %d MEASR %d %d' % (MEAS_ID, TS, 420, 69)
         assert MeasLine.parse(s) is None
 
 
 class TestMeasLineGood(unittest.TestCase):
     def test_begin(self):
-        s = '%s %d %d BEGIN' % (FP, MEAS_ID, TS)
+        s = '%d %d BEGIN %s' % (MEAS_ID, TS, FP)
         out = MeasLine.parse(s)
         assert isinstance(out, MeasLineBegin)
         assert out.relay_fp == FP
@@ -54,19 +54,17 @@ class TestMeasLineGood(unittest.TestCase):
         assert out.ts == TS
 
     def test_end(self):
-        s = '%s %d %d END' % (FP, MEAS_ID, TS)
+        s = '%d %d END' % (MEAS_ID, TS)
         out = MeasLine.parse(s)
         assert isinstance(out, MeasLineEnd)
-        assert out.relay_fp == FP
         assert out.meas_id == MEAS_ID
         assert out.ts == TS
 
     def test_data_measr(self):
         given = 42069
-        s = '%s %d %d MEASR %d' % (FP, MEAS_ID, TS, given)
+        s = '%d %d MEASR %d' % (MEAS_ID, TS, given)
         out = MeasLine.parse(s)
         assert isinstance(out, MeasLineData)
-        assert out.relay_fp == FP
         assert out.meas_id == MEAS_ID
         assert out.ts == TS
         assert out.given_bw == given
@@ -75,10 +73,9 @@ class TestMeasLineGood(unittest.TestCase):
     def test_data_bg(self):
         given = 420
         trusted = 69
-        s = '%s %d %d BG %d %d' % (FP, MEAS_ID, TS, given, trusted)
+        s = '%d %d BG %d %d' % (MEAS_ID, TS, given, trusted)
         out = MeasLine.parse(s)
         assert isinstance(out, MeasLineData)
-        assert out.relay_fp == FP
         assert out.meas_id == MEAS_ID
         assert out.ts == TS
         assert out.given_bw == given

@@ -39,34 +39,33 @@ BEGIN Line
 
 ::
 
-    <fp> <meas_id> <time> BEGIN
+    <meas_id> <time> BEGIN <fp>
 
 Where:
 
-- ``fp``: the fingerprint of the relay this BEGIN message is for.
 - ``meas_id``: the measurement ID for this measurement
 - ``time``: the integer unix timestamp at which active measurement began.
+- ``fp``: the fingerprint of the relay this BEGIN message is for.
 
 Example::
 
-    B0430D21D6609459D141078C0D7758B5CA753B6F 58234 1591979504 BEGIN
+    58234 1591979504 BEGIN B0430D21D6609459D141078C0D7758B5CA753B6F
 
 END line
 --------
 
 ::
 
-    <fp> <meas_id> <time> END
+    <meas_id> <time> END
 
 Where:
 
-- ``fp``: the fingerprint of the relay this END message is for.
 - ``meas_id``: the measurement ID for this measurement
 - ``time``: the integer unix timestamp at which active measurement ended.
 
 Example::
 
-    B0430D21D6609459D141078C0D7758B5CA753B6F 58234 1591979534 END
+    58234 1591979534 END B0430D21D6609459D141078C0D7758B5CA753B6F
 
 
 Results line
@@ -74,11 +73,10 @@ Results line
 
 ::
 
-    <fp> <meas_id> <time> <is_bg> GIVEN=<given> TRUSTED=<trusted>
+    <meas_id> <time> <is_bg> GIVEN=<given> TRUSTED=<trusted>
 
 Where:
 
-- ``fp``: the fingerprint of the relay.
 - ``meas_id``: the measurement ID for this measurement
 - ``time``: the integer unix timestamp at which this result was received.
 - ``is_bg``: 'BG' if this result is a report from the relay on the number of
@@ -100,12 +98,12 @@ trusted)`` as the trusted number of background bytes this second.
 Example::
 
     # bg report from relay, use GIVEN b/c less than TRUSTED
-    B0430D21D6609459D141078C0D7758B5CA753B6F 58234 1591979083 BG GIVEN=744904 TRUSTED=1659029
+    58234 1591979083 BG GIVEN=744904 TRUSTED=1659029
     # bg report from relay, use TRUSTED b/c less than GIVEN
-    B0430D21D6609459D141078C0D7758B5CA753B6F 58234 1591979042 BG GIVEN=671858 TRUSTED=50960
+    58234 1591979042 BG GIVEN=671858 TRUSTED=50960
     # result from measurer, always trusted
-    B0430D21D6609459D141078C0D7758B5CA753B6F 58234 1591979083 MEASR GIVEN=5059082 TRUSTED=5059082
-'''  # noqa: E501
+    58234 1591979083 MEASR GIVEN=5059082 TRUSTED=5059082
+'''
 import logging
 from statistics import median
 from typing import Optional, List
@@ -228,14 +226,12 @@ class MeasLine:
     ''' Parent class for other ``MeasLine*`` types. You should only ever need
     to interact with this class directly via its :meth:`MeasLine.parse` method.
     '''
-    def __init__(self, relay_fp: str, meas_id: int, ts: int):
-        self.relay_fp = relay_fp
+    def __init__(self, meas_id: int, ts: int):
         self.meas_id = meas_id
         self.ts = ts
 
     def __str__(self):
-        return '%s %d %d' % (
-            self.relay_fp,
+        return '%d %d' % (
             self.meas_id,
             self.ts)
 
@@ -248,32 +244,39 @@ class MeasLine:
         if s.startswith('#'):
             return None
         words = s.split()
-        # minimum line length, in words, is 4: begin and end lines have 4 words
-        # maximum line length, in words, is 6: bg data lines have 6
-        MIN_WORD_LEN = 4
-        MAX_WORD_LEN = 6
+        # minimum line length, in words, is 3: end lines have 3 words
+        # maximum line length, in words, is 5: bg data lines have 5
+        MIN_WORD_LEN = 3
+        MAX_WORD_LEN = 5
         if len(words) < MIN_WORD_LEN or len(words) > MAX_WORD_LEN:
             return None
         # split off the prefix words (words common to all measurement data
-        # lines
-        prefix, words = words[:3], words[3:]
+        # lines).
+        prefix, words = words[:2], words[2:]
         # try convert each one, bail if unable
-        fp = prefix[0]
-        meas_id = _try_parse_int(prefix[1])
-        ts = _try_parse_int(prefix[2])
+        meas_id = _try_parse_int(prefix[0])
+        ts = _try_parse_int(prefix[1])
         if meas_id is None or ts is None:
             return None
+        # now act differently based on what type of line we seem to have
         if words[0] == 'BEGIN':
+            # BEGIN <fp>
+            if len(words) != 2:
+                return None
+            fp = words[1]
             return MeasLineBegin(fp, meas_id, ts)
         elif words[0] == 'END':
-            return MeasLineEnd(fp, meas_id, ts)
+            # END
+            return MeasLineEnd(meas_id, ts)
         elif words[0] == 'MEASR':
+            # MEASR GIVEN=1234
             if len(words) != 2 or _try_parse_int(words[1]) is None:
                 return None
             res = _try_parse_int(words[1])
             assert isinstance(res, int)  # for mypy
-            return MeasLineData(res, None, fp, meas_id, ts)
+            return MeasLineData(res, None, meas_id, ts)
         elif words[0] == 'BG':
+            # BG GIVEN=1234 TRUSTED=5678
             if len(words) != 3 or \
                     _try_parse_int(words[1]) is None or \
                     _try_parse_int(words[2]) is None:
@@ -282,17 +285,18 @@ class MeasLine:
             trusted = _try_parse_int(words[2])
             assert isinstance(given, int)  # for mypy
             assert isinstance(trusted, int)  # for mypy
-            return MeasLineData(given, trusted, fp, meas_id, ts)
+            return MeasLineData(given, trusted, meas_id, ts)
         return None
 
 
 class MeasLineBegin(MeasLine):
-    def __init__(self, *a, **kw):
+    def __init__(self, fp: str, *a, **kw):
         super().__init__(*a, **kw)
+        self.relay_fp = fp
 
     def __str__(self):
         prefix = super().__str__()
-        return prefix + ' BEGIN'
+        return prefix + ' BEGIN ' + self.relay_fp
 
 
 class MeasLineEnd(MeasLine):
@@ -332,36 +336,33 @@ def write_begin(fp: str, meas_id: int, ts: int):
     log.info(MeasLineBegin(fp, meas_id, ts))
 
 
-def write_end(fp: str, meas_id: int, ts: int):
+def write_end(meas_id: int, ts: int):
     ''' Write a log line indicating the end of the given relay's measurement.
 
-    :param fp: the fingerprint of the relay
     :param meas_id: the measurement ID
     :param ts: the unix timestamp at which the measurement ended
     '''
-    log.info(MeasLineEnd(fp, meas_id, ts))
+    log.info(MeasLineEnd(meas_id, ts))
 
 
-def write_meas(fp: str, meas_id: int, ts: int, res: int):
+def write_meas(meas_id: int, ts: int, res: int):
     ''' Write a single per-second result from a measurer to our results.
 
-    :param fp: the fingerprint of the relay
     :param meas_id: the measurement ID
     :param ts: the unix timestamp at which the result came in
     :param res: the number of measured bytes
     '''
-    log.info(MeasLineData(res, None, fp, meas_id, ts))
+    log.info(MeasLineData(res, None, meas_id, ts))
 
 
-def write_bg(fp: str, meas_id: int, ts: int, given: int, trusted: int):
+def write_bg(meas_id: int, ts: int, given: int, trusted: int):
     ''' Write a single per-second report of bg traffic from the relay to our
     results.
 
-    :param fp: the fingerprint of the relay
     :param meas_id: the measurement ID
     :param ts: the unix timestamp at which the result came in
     :param given: the number of reported bg bytes
     :param trusted: the maximum given should be (from our perspective in this
         logging code, it's fine if given is bigger than trusted)
     '''
-    log.info(MeasLineData(given, trusted, fp, meas_id, ts))
+    log.info(MeasLineData(given, trusted, meas_id, ts))

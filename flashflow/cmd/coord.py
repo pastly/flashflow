@@ -419,7 +419,7 @@ class StateMachine(Machine):
             lst = [(ts, r) for ts, _, r in measr_report]
             for ts, r in lst:
                 results_logger.write_meas(
-                    meas.relay_fp, meas.meas_id, int(ts), r)
+                    meas.meas_id, int(ts), r)
             measr_reports.append([r for _, r in lst])
         # For each second, cap the amount of claimed bg traffic to the maximum
         # amount we will trust. I.e. if the relay is supposed to reserve no
@@ -449,7 +449,7 @@ class StateMachine(Machine):
                     'much', meas.meas_id, meas.relay_fp, max_bg, bg_untrust)
             bg_report_trust.append(min(bg_untrust, max_bg))
             results_logger.write_bg(
-                meas.relay_fp, meas.meas_id, int(ts), bg_untrust, max_bg)
+                meas.meas_id, int(ts), bg_untrust, max_bg)
         # Calculate each second's aggregate bytes
         aggs = [
             sum(sec_i_vals) for sec_i_vals
@@ -460,7 +460,7 @@ class StateMachine(Machine):
         log.info(
             'Meas %d %s was measured at %.2f Mbit/s',
             meas.meas_id, meas.relay_fp, res*8/1e6)
-        results_logger.write_end(meas.relay_fp, meas.meas_id, int(end_ts))
+        results_logger.write_end(meas.meas_id, int(end_ts))
 
     def _notif_circ_event_BUILT(self, meas: Measurement, event: CircuitEvent):
         ''' Received CIRC event with status BUILT.

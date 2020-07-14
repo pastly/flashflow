@@ -154,6 +154,8 @@ def gen(v3bw_fname: str, results_fname: str, max_results_age: float) -> str:
     }
     used_lines = 0
     measurements: Dict[str, Meas] = {}
+    # store for our internal purposes a mapping of measurement ID to relay FP
+    mid_to_fp: Dict[int, str] = {}
     fnames = _find_files(results_fname, min_ts=now-max_results_age)
     for fname in fnames:
         for line in _read(fname):
@@ -166,20 +168,27 @@ def gen(v3bw_fname: str, results_fname: str, max_results_age: float) -> str:
                         line.relay_fp)
                 used_lines += 1
                 measurements[line.relay_fp] = Meas(line)
+                mid_to_fp[line.meas_id] = line.relay_fp
             elif isinstance(line, MeasLineEnd):
-                if line.relay_fp not in measurements:
+                if line.meas_id not in mid_to_fp:
                     log.warn(
-                        'Found END line for %s but no known meas. Dropping.',
-                        line.relay_fp)
+                        'Found END line for unknown meas id %d. Dropping.',
+                        line.meas_id)
                     ignored_lines['unknown_meas'] += 1
                     continue
                 used_lines += 1
-                measurements[line.relay_fp].set_end(line)
+                measurements[mid_to_fp[line.meas_id]].set_end(line)
             elif isinstance(line, MeasLineData):
+                if line.meas_id not in mid_to_fp:
+                    log.warn(
+                        'Found BG or MEASR line for unknown meas id %d. '
+                        'Dropping.', line.meas_id)
+                    ignored_lines['unknown_meas'] += 1
+                    continue
                 if line.is_bg():
-                    measurements[line.relay_fp].add_bg(line)
+                    measurements[mid_to_fp[line.meas_id]].add_bg(line)
                 else:
-                    measurements[line.relay_fp].add_measr(line)
+                    measurements[mid_to_fp[line.meas_id]].add_measr(line)
                 used_lines += 1
             else:
                 log.warn(
