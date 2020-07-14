@@ -1,5 +1,5 @@
 ''' Helper functions for writing per-second measurement results to a file that
-might rotate.
+might rotate, as well as classes for reading those results from files later.
 
 **Note: The information here is only partially true until pastly/flashflow#4 is
 implemented and this message is removed.**
@@ -107,74 +107,261 @@ Example::
     B0430D21D6609459D141078C0D7758B5CA753B6F 58234 1591979083 MEASR GIVEN=5059082 TRUSTED=5059082
 '''  # noqa: E501
 import logging
+from statistics import median
+from typing import Optional, List
+
 
 log = logging.getLogger(__name__)
 
 
-def write_begin(fp: str, ts: int):
+def _try_parse_int(s: str) -> Optional[int]:
+    ''' Try to parse an integer from the given string. If impossible, return
+    ``None``. '''
+    try:
+        return int(s)
+    except (ValueError, TypeError):
+        return None
+
+
+def _ensure_len(lst: List[int], min_len: int):
+    ''' Ensure that the given list is at least ``min_len`` items long. If it
+    isn't, append zeros to the right until it is. '''
+    if len(lst) < min_len:
+        lst += [0] * (min_len - len(lst))
+
+
+class Meas:
+    ''' Accumulate ``MeasLine*`` objects into a single measurement summary.
+
+    The first measurement line you should see is a :class:`MeasLineBegin`;
+    create a :class:`Meas` object with it. Then pass each :class:`MeasLineData`
+    that you encounter to either :meth:`Meas.add_measr` or :meth:`Meas.add_bg`
+    based on where it came from. Finally pass the :class:`MeasLineEnd` to tell
+    the object it has all the data.
+
+    Not much is done to ensure you're using this data storage class correctly.
+    For example:
+
+        - You can add more :class:`MeasLineData` after marking the end.
+        - You can pass untrusted :class:`MeasLineData` from the relay to the
+            :meth:`Meas.add_measr` function where they will be treated as
+            trusted.
+        - You can get the :meth:`Meas.result` before all data lines have been
+            given.
+        - You can provide data from different measurements for different
+            relays.
+
+    **You shouldn't do these things**, but you can. It's up to you to use your
+    tools as perscribed.
+    '''
+    _begin: 'MeasLineBegin'
+    _end: Optional['MeasLineEnd']
+    _data: List[int]
+
+    def __init__(self, begin: 'MeasLineBegin'):
+        self._begin = begin
+        self._end = None
+        self._data = []
+
+    @property
+    def relay_fp(self) -> str:
+        ''' The relay measured, as given in the initial :class:`MeasLineBegin`.
+        '''
+        return self._begin.relay_fp
+
+    @property
+    def meas_id(self) -> int:
+        ''' The measurement ID, as given in the initial :class:`MeasLineBegin'.
+        '''
+        return self._begin.meas_id
+
+    @property
+    def start_ts(self) -> int:
+        ''' The integer timestamp for when the measurement started, as given in
+        the initial :class:`MeasLineBegin`. '''
+        return self._begin.ts
+
+    def _ensure_len(self, data_len: int):
+        ''' Ensure we can store at least ``data_len`` items, expanding our data
+        list to the right with zeros as necessary. '''
+        if len(self._data) < data_len:
+            self._data += [0] * (data_len - len(self._data))
+
+    def add_measr(self, data: 'MeasLineData'):
+        ''' Add a :class:`MeasLineData` to our results that came from a
+        measurer.
+
+        As it came from a measurer, we trust it entirely (and there's no
+        ``trusted_bw`` member) and simply add it to the appropriate second.
+        '''
+        idx = data.ts - self.start_ts
+        _ensure_len(self._data, idx + 1)
+        self._data[idx] += data.given_bw
+
+    def add_bg(self, data: 'MeasLineData'):
+        ''' Add a :class:`MeasLineData` to our results that came from the relay
+        and is regarding the amount of background traffic.
+
+        As it came from the relay, we do not a ``given_bw > trusted_bw``. Thus
+        we add the minimum of the two to the appropriate second.
+        '''
+        idx = data.ts - self.start_ts
+        _ensure_len(self._data, idx + 1)
+        assert data.trusted_bw is not None  # for mypy, bg will have this
+        self._data[idx] += min(data.given_bw, data.trusted_bw)
+
+    def set_end(self, end: 'MeasLineEnd'):
+        ''' Indicate that there is no more data to be loaded into this
+        :class:`Meas`. '''
+        self._end = end
+
+    def have_all_data(self) -> bool:
+        ''' Check if we still expect to be given more data '''
+        return self._end is not None
+
+    def result(self) -> float:
+        ''' Calculate and return the result of this measurement '''
+        return median(self._data)
+
+
+class MeasLine:
+    ''' Parent class for other ``MeasLine*`` types. You should only ever need
+    to interact with this class directly via its :meth:`MeasLine.parse` method.
+    '''
+    def __init__(self, relay_fp: str, meas_id: int, ts: int):
+        self.relay_fp = relay_fp
+        self.meas_id = meas_id
+        self.ts = ts
+
+    def __str__(self):
+        return '%s %d %d' % (
+            self.relay_fp,
+            self.meas_id,
+            self.ts)
+
+    @staticmethod
+    def parse(s: str) -> Optional['MeasLine']:
+        ''' Try to parse a MeasLine subclass from the given line ``s``. If
+        impossible, return ``None``. '''
+        s = s.strip()
+        # ignore comment lines
+        if s.startswith('#'):
+            return None
+        words = s.split()
+        # minimum line length, in words, is 4: begin and end lines have 4 words
+        # maximum line length, in words, is 6: bg data lines have 6
+        MIN_WORD_LEN = 4
+        MAX_WORD_LEN = 6
+        if len(words) < MIN_WORD_LEN or len(words) > MAX_WORD_LEN:
+            return None
+        # split off the prefix words (words common to all measurement data
+        # lines
+        prefix, words = words[:3], words[3:]
+        # try convert each one, bail if unable
+        fp = prefix[0]
+        meas_id = _try_parse_int(prefix[1])
+        ts = _try_parse_int(prefix[2])
+        if meas_id is None or ts is None:
+            return None
+        if words[0] == 'BEGIN':
+            return MeasLineBegin(fp, meas_id, ts)
+        elif words[0] == 'END':
+            return MeasLineEnd(fp, meas_id, ts)
+        elif words[0] == 'MEASR':
+            if len(words) != 2 or _try_parse_int(words[1]) is None:
+                return None
+            res = _try_parse_int(words[1])
+            assert isinstance(res, int)  # for mypy
+            return MeasLineData(res, None, fp, meas_id, ts)
+        elif words[0] == 'BG':
+            if len(words) != 3 or \
+                    _try_parse_int(words[1]) is None or \
+                    _try_parse_int(words[2]) is None:
+                return None
+            given = _try_parse_int(words[1])
+            trusted = _try_parse_int(words[2])
+            assert isinstance(given, int)  # for mypy
+            assert isinstance(trusted, int)  # for mypy
+            return MeasLineData(given, trusted, fp, meas_id, ts)
+        return None
+
+
+class MeasLineBegin(MeasLine):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+
+    def __str__(self):
+        prefix = super().__str__()
+        return prefix + ' BEGIN'
+
+
+class MeasLineEnd(MeasLine):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+
+    def __str__(self):
+        prefix = super().__str__()
+        return prefix + ' END'
+
+
+class MeasLineData(MeasLine):
+    def __init__(self, given_bw: int, trusted_bw: Optional[int], *a, **kw):
+        super().__init__(*a, **kw)
+        self.given_bw = given_bw
+        self.trusted_bw = trusted_bw
+
+    def is_bg(self) -> bool:
+        return self.trusted_bw is not None
+
+    def __str__(self):
+        prefix = super().__str__()
+        if self.trusted_bw is None:
+            # result from a measurer
+            return prefix + ' MEASR %d' % (self.given_bw,)
+        # result from relay
+        return prefix + ' BG %d %d' % (self.given_bw, self.trusted_bw)
+
+
+def write_begin(fp: str, meas_id: int, ts: int):
     ''' Write a log line indicating the start of the given relay's measurement.
 
     :param fp: the fingerprint of the relay
+    :param meas_id: the measurement ID
     :param ts: the unix timestamp at which the measurement began
     '''
-    return _write_beginend(fp, ts, True)
+    log.info(MeasLineBegin(fp, meas_id, ts))
 
 
-def write_end(fp: str, ts: int):
+def write_end(fp: str, meas_id: int, ts: int):
     ''' Write a log line indicating the end of the given relay's measurement.
 
     :param fp: the fingerprint of the relay
+    :param meas_id: the measurement ID
     :param ts: the unix timestamp at which the measurement ended
     '''
-    return _write_beginend(fp, ts, False)
+    log.info(MeasLineEnd(fp, meas_id, ts))
 
 
-def write_meas(fp: str, ts: int, res: int):
+def write_meas(fp: str, meas_id: int, ts: int, res: int):
     ''' Write a single per-second result from a measurer to our results.
 
     :param fp: the fingerprint of the relay
+    :param meas_id: the measurement ID
     :param ts: the unix timestamp at which the result came in
     :param res: the number of measured bytes
     '''
-    return _write_result(fp, ts, False, res, res)
+    log.info(MeasLineData(res, None, fp, meas_id, ts))
 
 
-def write_bg(fp: str, ts: int, given: int, trusted: int):
+def write_bg(fp: str, meas_id: int, ts: int, given: int, trusted: int):
     ''' Write a single per-second report of bg traffic from the relay to our
     results.
 
     :param fp: the fingerprint of the relay
+    :param meas_id: the measurement ID
     :param ts: the unix timestamp at which the result came in
     :param given: the number of reported bg bytes
     :param trusted: the maximum given should be (from our perspective in this
         logging code, it's fine if given is bigger than trusted)
     '''
-    return _write_result(fp, ts, True, given, trusted)
-
-
-def _write_result(fp: str, ts: int, is_bg: bool, given: int, trusted: int):
-    ''' Write a single per-second result from either a measurer or the relay
-    (for bg traffic reports) to our log file.
-
-    :param fp: the fingerprint of the relay
-    :param ts: the unix timestamp at which the result came in
-    :param is_bg: True if this result is a bg report from the relay, else False
-        for a result from a measurer
-    :param given: the number of measured bytes or reported bg bytes that second
-    :param trusted: the maximum given should be (from our perspective in this
-        logging code, it's fine if given is bigger than trusted)
-    '''
-    label = 'BG' if is_bg else 'MEASR'
-    log.info('%s %d %s GIVEN=%d TRUSTED=%d', fp, ts, label, given, trusted)
-
-
-def _write_beginend(fp: str, ts: int, is_begin: bool):
-    ''' Write a log line indicating the start or end of the given relay's
-    measurement.
-
-    - fp: the fingerprint of the relay
-    - ts: the unix timestamp at which the measurement began/ended
-    - is_begin: True if this is for the beginning, else False for ending
-    '''
-    word = 'BEGIN' if is_begin else 'END'
-    log.info('%s %d %s', fp, ts, word)
+    log.info(MeasLineData(given, trusted, fp, meas_id, ts))

@@ -16,6 +16,7 @@ from .. import tor_client
 from .. import results_logger
 from ..tor_ctrl_msg import CoordStartMeas
 from .. import msg
+from .. import v3bw
 from stem import CircStatus  # type: ignore
 from stem.control import Controller, EventType  # type: ignore
 from stem.response.events import CircuitEvent, FFMeasEvent  # type: ignore
@@ -406,7 +407,7 @@ class StateMachine(Machine):
         ''' We have completed a measurement (maybe successfully) and should
         write out measurement results to our file. '''
         start_ts, end_ts = meas.start_and_end()
-        results_logger.write_begin(meas.relay_fp, int(start_ts))
+        results_logger.write_begin(meas.relay_fp, meas.meas_id, int(start_ts))
         # Take the minimum of send/recv from the relay's bg reports for each
         # second. These are untrusted results because the relay may have lied
         # about having a massive amount of background traffic
@@ -417,7 +418,8 @@ class StateMachine(Machine):
         for measr_report in meas.measr_reports.values():
             lst = [(ts, r) for ts, _, r in measr_report]
             for ts, r in lst:
-                results_logger.write_meas(meas.relay_fp, int(ts), r)
+                results_logger.write_meas(
+                    meas.relay_fp, meas.meas_id, int(ts), r)
             measr_reports.append([r for _, r in lst])
         # For each second, cap the amount of claimed bg traffic to the maximum
         # amount we will trust. I.e. if the relay is supposed to reserve no
@@ -446,7 +448,8 @@ class StateMachine(Machine):
                     'Meas %d capping %s\'s reported bg to %d as %d is too '
                     'much', meas.meas_id, meas.relay_fp, max_bg, bg_untrust)
             bg_report_trust.append(min(bg_untrust, max_bg))
-            results_logger.write_bg(meas.relay_fp, int(ts), bg_untrust, max_bg)
+            results_logger.write_bg(
+                meas.relay_fp, meas.meas_id, int(ts), bg_untrust, max_bg)
         # Calculate each second's aggregate bytes
         aggs = [
             sum(sec_i_vals) for sec_i_vals
@@ -457,7 +460,7 @@ class StateMachine(Machine):
         log.info(
             'Meas %d %s was measured at %.2f Mbit/s',
             meas.meas_id, meas.relay_fp, res*8/1e6)
-        results_logger.write_end(meas.relay_fp, int(end_ts))
+        results_logger.write_end(meas.relay_fp, meas.meas_id, int(end_ts))
 
     def _notif_circ_event_BUILT(self, meas: Measurement, event: CircuitEvent):
         ''' Received CIRC event with status BUILT.
@@ -611,7 +614,11 @@ class StateMachine(Machine):
 
     def _generate_v3bw(self):
         ''' Generate a v3bw file using our latest results for each relay. '''
-        pass
+        v3bw_fname = v3bw.gen(
+            self.conf.getpath('v3bw', 'v3bw'),
+            self.conf.getpath('coord', 'results_log'),
+            self.conf.getfloat('v3bw', 'max_results_age'))
+        log.debug(v3bw_fname)
 
     # ########################################################################
     # STATE CHANGE EVENTS. These are called when entering the specified state.
