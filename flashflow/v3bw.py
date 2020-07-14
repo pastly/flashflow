@@ -31,6 +31,7 @@ def _read(fname: str) -> List[MeasLine]:
 
     If the file name ends in ``.gz``, it is assumed to be gzip compressed.
     '''
+    log.debug('Reading per-second results from %s', fname)
     out = []
     if fname.endswith('.gz'):
         fd = gzip.open(fname, 'rt')
@@ -184,11 +185,20 @@ def gen(v3bw_fname: str, results_fname: str, max_results_age: float) -> str:
                 log.warn(
                     'Unhandled MeasLine type %s', type(line))
                 ignored_lines['type'] += 1
+    incomplete_relays = {
+        m.relay_fp for m in measurements.values() if not m.have_all_data()
+    }
+    if len(incomplete_relays):
+        for relay_fp in incomplete_relays:
+            del measurements[relay_fp]
     log.info(
         'Finished v3bw file generation. Used %d lines from %d files to '
         'produce results for %d relays. Ignored %d lines due to age, '
-        '%d lines due to unknown type, %d lines due to unknown meas.',
+        '%d lines due to unknown type, %d lines due to unknown meas. '
+        'Ignored %d measurements that seem incomplete.',
         used_lines, len(fnames), len(measurements),
         ignored_lines['age'], ignored_lines['type'],
-        ignored_lines['unknown_meas'])
+        ignored_lines['unknown_meas'],
+        len(incomplete_relays),
+    )
     return _write_results(v3bw_fname, measurements, now)
