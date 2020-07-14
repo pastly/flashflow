@@ -19,6 +19,7 @@ from .. import msg
 from .. import v3bw
 from stem import CircStatus  # type: ignore
 from stem.control import Controller, EventType  # type: ignore
+import stem.descriptor.router_status_entry as stem_rse  # type: ignore
 from stem.response.events import CircuitEvent, FFMeasEvent  # type: ignore
 from transitions import Machine  # type: ignore
 
@@ -26,6 +27,15 @@ from transitions import Machine  # type: ignore
 def next_meas_id() -> int:
     ''' Generate a new measurement ID '''
     return random.randint(1, 2**32-1)
+
+
+def find_relay(c: Controller, nick_fp: str) \
+        -> Optional[stem_rse.RouterStatusEntryV3]:
+    ''' Ask our tor client for the :class:`RouterStatusEntryV3` object for the
+    given relay, identified either by nickname or fingerprint. If impossible,
+    (e.g. it doesn't exist), return ``None``.
+    '''
+    return c.get_network_status(nick_fp, default=None)
 
 
 class MeasrProtocol(asyncio.Protocol):
@@ -701,7 +711,10 @@ class StateMachine(Machine):
                 return False, 'Not READY'
             log.debug('told to measure %s', words[1])
             meas_id = next_meas_id()
-            relay_fp = words[1]
+            relay = find_relay(self.tor_client, words[1])
+            if not relay:
+                return False, 'No such relay ' + words[1]
+            relay_fp = relay.fingerprint
             meas = Measurement(
                 meas_id,
                 relay_fp,
